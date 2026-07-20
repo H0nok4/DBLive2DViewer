@@ -1,72 +1,105 @@
 # Daiblos Spine Observatory
 
-面向 [bungaku-moe/DaiblosCoreAssets](https://github.com/bungaku-moe/DaiblosCoreAssets) 的 Spine 3.8 预览网站。界面参考 Brown Dust 2 L2D Viewer 的核心使用方式，并针对大量素材设计为素材库、舞台和控制台三栏布局。
+A responsive, browser-based Spine 3.8 viewer for the assets published in
+[bungaku-moe/DaiblosCoreAssets](https://github.com/bungaku-moe/DaiblosCoreAssets).
 
-## 功能
+**[Open the live viewer](https://h0nok4.github.io/DBLive2DViewer/)**
 
-- 内置 435 个目录、655 个 Spine 骨架的资源索引
-- 本地仓库优先；文件不存在时自动回退到 GitHub Raw
-- 自动修复仓库中 atlas 声明尺寸、实际 PNG 尺寸及边界坐标不一致导致的加载中断
-- 动画和皮肤切换、循环、暂停、0.1×–2× 播放速率
-- 当前动画图层搜索、逐项显隐和 Effect 背景/前景分组控制
-- 自动识别服装、附件和颜色状态动画，以独立开关叠加到其他动作并随链接分享
-- 自动识别同一骨架内空间重叠的多套人物形态，并按当前动作隐藏未参与动画的形态
-- 拖拽、滚轮缩放、水平翻转、骨骼调试和全屏
-- 多关键词搜索、素材分类和 URL 状态分享
-- 桌面三栏与移动端抽屉式响应布局
+The viewer organizes the upstream files into a searchable character and CG library, then combines each main skeleton with its matching Effect layers. The interface is available in English and Simplified Chinese and remembers the selected language.
 
-## 本地运行
+## Highlights
+
+- Browse 131 characters and 75 CG entries from a generated asset manifest.
+- Switch character skins or CG scenes without leaving the current entry.
+- Load from a local asset checkout first and fall back to GitHub-hosted assets automatically.
+- Merge matching background and foreground Effect skeletons into the main scene.
+- Inspect animations, skeleton skins, slots, attachments, and live render layers.
+- Search layers and hide individual slots or complete skeleton groups.
+- Extract stable visual snapshots from state-style animations, including multi-color outfit states, without relying on an animation's final reset frame.
+- Preserve Idle underneath partial overlay actions to avoid frozen bones and duplicate attachments.
+- Detect overlapping character forms and hide inactive variants during playback.
+- Correct common atlas size, premultiplied-alpha, mipmap, and texture-edge issues found in the source files.
+- Share the selected model, animation, and visual states through the page URL.
+- Drag, zoom, flip, pause, change playback speed, inspect skeleton debug data, and enter fullscreen.
+
+## Quick start
+
+Requirements: a current Node.js release and npm.
 
 ```bash
+git clone https://github.com/H0nok4/DBLive2DViewer.git
+cd DBLive2DViewer
 npm install
 npm run dev
 ```
 
-打开 `http://127.0.0.1:4173/`。
+Open <http://127.0.0.1:4173/>.
 
-## 下载或更新完整素材仓库
+The development server can run without a local asset checkout. Missing files are requested on demand from the upstream GitHub repository.
+
+## Download the complete asset repository
+
+For faster and more reliable local browsing, synchronize the complete upstream asset set:
 
 ```bash
 npm run assets:sync
 ```
 
-素材会下载到项目根目录的 `DaiblosCoreAssets/`。该目录已加入 `.gitignore`，不会被误提交到预览器仓库。
+This command creates `DaiblosCoreAssets/` in the project root. The directory is ignored by Git, so the multi-gigabyte asset set is not committed to this repository.
 
-首次同步约需 3.85 GiB。同步器使用轻量 Git 元数据记录上游 commit，逐文件并发下载并按 GitHub 文件大小校验；中途中断后再次执行同一命令会跳过已经完整的文件，只补齐缺失部分。后续执行则会拉取上游更新。
+The synchronizer:
 
-开发或预览服务器会通过 `/daiblos-assets/` 读取本地文件，页面顶部显示 `LOCAL DISK`。只有本地文件不可用时才会显示 `REMOTE` 并切换到远程源。
+1. Creates or updates a lightweight Git checkout of the upstream repository.
+2. Downloads and verifies asset files in parallel.
+3. Resumes incomplete downloads by skipping files that already match their expected size.
+4. Regenerates the grouped character and CG manifest.
 
-## 构建
+When local files are available, the header reports `LOCAL DISK`. Otherwise the viewer reports `REMOTE` and uses the hosted fallback.
+
+## Build and preview
 
 ```bash
 npm run build
 npm run preview
 ```
 
-## 更新资源索引
+The production output is written to `dist/`.
 
-上游仓库新增模型后执行：
+## Refresh the asset manifest
+
+After the upstream repository adds or renames models, run:
 
 ```bash
 npm run generate:manifest
 ```
 
-脚本会通过 GitHub Tree API 重新生成 `src/data/assets.generated.json`。
+The generator reads the GitHub tree and rewrites `src/data/assets.generated.json`, grouping Break models as character skins and matching Effect models with their main variant.
 
-## 部署
+## Deploy to GitHub Pages
 
-Vite 使用相对 `base`，可部署到 GitHub Pages、Cloudflare Pages 或 Netlify。执行下面的命令会先构建网站，再将 `dist/` 发布到远程仓库的 `gh-pages` 分支：
+The Vite build uses a relative base path and can be hosted from a project subdirectory. To build and publish `dist/` to the `gh-pages` branch:
 
 ```bash
 npm run deploy
 ```
 
-GitHub Pages 的发布源需要设置为 `gh-pages` 分支根目录。
+Configure the repository's Pages source to deploy from the root of the `gh-pages` branch.
 
-静态部署不会携带本地 3.85 GiB 素材，会按需从
-[`bungaku-moe/DaiblosCoreAssets`](https://github.com/bungaku-moe/DaiblosCoreAssets)
-的 GitHub Raw 地址读取当前模型资源。
+The deployed site does not include the local asset checkout. Models are fetched on demand from [DaiblosCoreAssets](https://github.com/bungaku-moe/DaiblosCoreAssets), keeping this viewer repository and its deployment small.
 
-## 说明
+## Project structure
 
-本项目只提供资源索引与预览能力。游戏素材版权归原权利人所有，请遵守上游仓库及相关权利人的使用要求。
+```text
+src/
+├── components/          Viewer, controls, and layer inspector
+├── data/                Generated asset manifest
+├── lib/                 Asset URLs and Spine/atlas loading
+├── i18n.tsx             English and Simplified Chinese UI strings
+├── App.tsx              Library and control-deck composition
+└── styles.css           Responsive application styling
+scripts/                 Asset synchronization and manifest generation
+```
+
+## Asset notice
+
+This project provides an index and preview interface only. Game assets are loaded from the upstream repository and remain the property of their respective rights holders. Follow the upstream repository's terms and all applicable rights-holder requirements when using them.

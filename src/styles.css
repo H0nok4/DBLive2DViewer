@@ -81,6 +81,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .source-remote { color: #d8a75f; }
 .source-remote i { background: #e6a64d; }
 .asset-count { letter-spacing: .06em; }
+.language-switch {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--line);
+  background: #0a0d0f;
+}
+.language-switch button {
+  min-width: 34px;
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  background: transparent;
+  color: #69716f;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+.language-switch button:hover { color: #dfe4d9; }
+.language-switch button.active { color: #10140b; background: var(--acid); font-weight: 750; }
 .icon-button, .mobile-icon {
   border: 0;
   background: transparent;
@@ -529,6 +550,14 @@ input[type='range'] { accent-color: var(--acid); cursor: pointer; height: 3px; }
   .zoom-control span, .zoom-control output { display: none; }
   .toolbar-separator { margin: 0; }
   .stage-heading p { max-width: 75vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+@media (max-width: 480px) {
+  .brand { gap: 8px; }
+  .brand-mark { display: none; }
+  .brand h1 { font-size: 14px; }
+  .language-switch button { min-width: 30px; padding: 0 5px; }
+  .source-link { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

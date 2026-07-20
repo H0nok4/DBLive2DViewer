@@ -25,6 +25,7 @@ import type {
 } from '../types'
 import { assetUrlCandidates } from '../lib/asset-url'
 import { loadSpineAsset, type LoadedSpineAsset } from '../lib/spine-loader'
+import { useI18n } from '../i18n'
 
 interface SpineStageProps {
   asset: SpineAsset
@@ -412,7 +413,7 @@ function collectVisualStateProfile(spine: Spine): VisualStateProfile {
       snapshots.set(id, snapshot)
       return {
         id,
-        label: `状态 ${index + 1}`,
+        label: `State ${index + 1}`,
         time: snapshot.time,
         previewColor: representativeStateColor(setup, snapshot),
       }
@@ -770,9 +771,9 @@ function lockPostUpdate(
 }
 
 function layerIdentity(layer: LoadedLayer) {
-  if (layer.layer === 'back') return { id: `back:${layer.asset.id}`, label: `背景 Effect · ${layer.asset.title}`, kind: 'back' as const }
-  if (layer.layer === 'front') return { id: `front:${layer.asset.id}`, label: `前景 Effect · ${layer.asset.title}`, kind: 'front' as const }
-  return { id: `main:${layer.asset.id}`, label: `主骨架 · ${layer.asset.title}`, kind: 'main' as const }
+  if (layer.layer === 'back') return { id: `back:${layer.asset.id}`, label: layer.asset.title, kind: 'back' as const }
+  if (layer.layer === 'front') return { id: `front:${layer.asset.id}`, label: layer.asset.title, kind: 'front' as const }
+  return { id: `main:${layer.asset.id}`, label: layer.asset.title, kind: 'main' as const }
 }
 
 function destroyResources(resources: LoadedSpineAsset[]) {
@@ -802,6 +803,7 @@ export function SpineStage({
   onProgress,
   onZoomChange,
 }: SpineStageProps) {
+  const { t } = useI18n()
   const hostRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const groupRef = useRef<Container | null>(null)
@@ -821,10 +823,12 @@ export function SpineStage({
   const viewPropsRef = useRef({ zoom, flipped })
   const dragRef = useRef<{ pointerId: number; x: number; y: number } | null>(null)
   const lastProgressRef = useRef(0)
+  const tRef = useRef(t)
   const [rendererReady, setRendererReady] = useState(false)
   const effectKey = effects.map((effect) => `${effect.layer}:${effect.asset.id}`).join('|')
   const persistentAnimationKey = persistentAnimations.join('|')
   requestedVisualStatesRef.current = new Set(persistentAnimations)
+  tRef.current = t
 
   const updateAutomaticCharacterVisibility = (requestedAnimation: string) => {
     const profile = characterVariantProfileRef.current
@@ -912,13 +916,18 @@ export function SpineStage({
 
     async function loadEffect(effect: SpineEffect, source: AssetSource) {
       const candidate = assetUrlCandidates(effect.asset.jsonPath, effect.asset.atlasPath).find((item) => item.source === source)
-      if (!candidate) throw new Error(`缺少 ${source} 素材地址`)
+      if (!candidate) throw new Error(tRef.current('load.missingSource', { source }))
       return loadSpineAsset(candidate.jsonUrl, candidate.atlasUrl, abortController.signal)
     }
 
     async function load() {
       onSourceChange('checking')
-      onLoadState({ kind: 'loading', message: effects.length ? `正在组合角色与 ${effects.length} 个 Effect 图层…` : '正在从本地素材库读取骨架与纹理…' })
+      onLoadState({
+        kind: 'loading',
+        message: effects.length
+          ? tRef.current('load.combiningEffects', { count: effects.length })
+          : tRef.current('load.local'),
+      })
       onProgress(0, 0)
       onLayers([])
       clearStage(app)
@@ -929,7 +938,7 @@ export function SpineStage({
 
         for (const candidate of assetUrlCandidates(asset.jsonPath, asset.atlasPath)) {
           if (candidate.source === 'remote') {
-            onLoadState({ kind: 'loading', message: '本地素材不可用，正在切换远程备用源…' })
+            onLoadState({ kind: 'loading', message: tRef.current('load.remoteFallback') })
           }
 
           const candidateResources: LoadedSpineAsset[] = []
@@ -957,7 +966,7 @@ export function SpineStage({
           }
         }
 
-        if (!layers) throw lastError ?? new Error('没有可用的素材源')
+        if (!layers) throw lastError ?? new Error(tRef.current('load.noSource'))
         if (cancelled) {
           destroyResources(layers.map((layer) => layer.resource))
           return
@@ -998,7 +1007,7 @@ export function SpineStage({
           group.addChild(spine)
         }
 
-        if (!mainSpine) throw new Error('角色主骨架未能加载')
+        if (!mainSpine) throw new Error(tRef.current('load.noMain'))
         visualStateProfileRef.current = collectVisualStateProfile(mainSpine)
         characterVariantProfileRef.current = detectCharacterVariants
           ? collectCharacterVariantProfile(mainSpine)
@@ -1055,7 +1064,7 @@ export function SpineStage({
         const detail = error instanceof Error ? error.message : String(error)
         onLoadState({
           kind: 'error',
-          message: `模型加载失败。请检查本地素材或稍后重试。\n${detail}`,
+          message: `${tRef.current('load.failed')}\n${detail}`,
         })
       }
     }

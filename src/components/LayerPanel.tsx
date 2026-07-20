@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Icon } from './Icon'
+import { useI18n } from '../i18n'
 import type { SpineLayerInfo } from '../types'
 
 interface LayerPanelProps {
@@ -18,6 +19,7 @@ interface LayerGroup {
 }
 
 export function LayerPanel({ layers, hiddenLayerIds, loading, onToggle, onSetVisibility }: LayerPanelProps) {
+  const { t } = useI18n()
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLowerCase()
   const filteredLayers = useMemo(() => {
@@ -42,15 +44,19 @@ export function LayerPanel({ layers, hiddenLayerIds, loading, onToggle, onSetVis
 
   const visibleCount = layers.reduce((count, layer) => count + (hiddenLayerIds.has(layer.id) ? 0 : 1), 0)
   const filteredIds = filteredLayers.map((layer) => layer.id)
+  const groupLabel = (group: LayerGroup) => t(
+    group.kind === 'back' ? 'layer.groupBack' : group.kind === 'front' ? 'layer.groupFront' : 'layer.groupMain',
+    { name: group.label },
+  )
 
   return (
-    <div className="layer-panel" role="tabpanel" aria-label="图层控制">
+    <div className="layer-panel" role="tabpanel" aria-label={t('layer.control')}>
       <div className="layer-summary">
         <div>
           <span className="eyebrow">LIVE SLOT STACK</span>
-          <strong>{visibleCount}<small> / {layers.length} 可见</small></strong>
+          <strong>{visibleCount}<small>{t('layer.visible', { count: layers.length })}</small></strong>
         </div>
-        <span className="layer-live-indicator"><i />随动画锁定</span>
+        <span className="layer-live-indicator"><i />{t('layer.animationLocked')}</span>
       </div>
 
       <div className="layer-tools">
@@ -59,16 +65,16 @@ export function LayerPanel({ layers, hiddenLayerIds, loading, onToggle, onSetVis
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="筛选 slot 或 attachment…"
-            aria-label="筛选图层"
+            placeholder={t('layer.search')}
+            aria-label={t('layer.filter')}
           />
-          {query && <button onClick={() => setQuery('')} aria-label="清空图层筛选"><Icon name="close" size={13} /></button>}
+          {query && <button onClick={() => setQuery('')} aria-label={t('layer.clearFilter')}><Icon name="close" size={13} /></button>}
         </label>
         <div className="layer-bulk-actions">
-          <button disabled={!filteredIds.length} onClick={() => onSetVisibility(filteredIds, true)}>全部显示</button>
-          <button disabled={!filteredIds.length} onClick={() => onSetVisibility(filteredIds, false)}>全部隐藏</button>
+          <button disabled={!filteredIds.length} onClick={() => onSetVisibility(filteredIds, true)}>{t('layer.showAll')}</button>
+          <button disabled={!filteredIds.length} onClick={() => onSetVisibility(filteredIds, false)}>{t('layer.hideAll')}</button>
         </div>
-        {normalizedQuery && <div className="layer-filter-caption">筛选到 {filteredLayers.length} 个图层</div>}
+        {normalizedQuery && <div className="layer-filter-caption">{t(filteredLayers.length === 1 ? 'layer.filterOne' : 'layer.filterCount', { count: filteredLayers.length })}</div>}
       </div>
 
       <div className="layer-groups">
@@ -80,8 +86,8 @@ export function LayerPanel({ layers, hiddenLayerIds, loading, onToggle, onSetVis
           return (
             <section className={`layer-group layer-group-${group.kind}`} key={group.id}>
               <div className="layer-group-heading">
-                <div><i /><strong>{group.label}</strong><span>{groupVisible}/{group.layers.length}</span></div>
-                <button onClick={() => onSetVisibility(groupIds, shouldShow)}>{shouldShow ? '显示组' : '隐藏组'}</button>
+                <div><i /><strong>{groupLabel(group)}</strong><span>{groupVisible}/{group.layers.length}</span></div>
+                <button onClick={() => onSetVisibility(groupIds, shouldShow)}>{shouldShow ? t('layer.showGroup') : t('layer.hideGroup')}</button>
               </div>
               <div className="layer-list">
                 {group.layers.map((layer) => {
@@ -103,12 +109,12 @@ export function LayerPanel({ layers, hiddenLayerIds, loading, onToggle, onSetVis
           )
         })}
 
-        {!groups.length && loading && <div className="layer-empty"><div className="loader-orbit"><i/><i/><i/></div><span>正在读取当前动画图层…</span></div>}
+        {!groups.length && loading && <div className="layer-empty"><div className="loader-orbit"><i/><i/><i/></div><span>{t('layer.loading')}</span></div>}
         {!groups.length && !loading && (
           <div className="layer-empty">
             <Icon name="layers" size={28} />
-            <strong>{normalizedQuery ? '没有匹配的图层' : '当前动画没有可切换图层'}</strong>
-            <span>{normalizedQuery ? '尝试其他 slot 或 attachment 名称' : '裁剪蒙版和非渲染 slot 已自动排除'}</span>
+            <strong>{normalizedQuery ? t('layer.noMatches') : t('layer.noLayers')}</strong>
+            <span>{normalizedQuery ? t('layer.tryOther') : t('layer.excluded')}</span>
           </div>
         )}
       </div>

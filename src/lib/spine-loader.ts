@@ -163,11 +163,11 @@ function createTextureAtlas(atlasText: string, textures: Map<string, BaseTexture
         atlasText,
         (pageName, done) => {
           const texture = textures.get(pageName)
-          if (!texture) throw new Error(`Atlas 引用了不存在的纹理页: ${pageName}`)
+          if (!texture) throw new Error(`Atlas references a missing texture page: ${pageName}`)
           done(texture)
         },
         (atlas) => {
-          if (!atlas) reject(new Error('Atlas 解析失败'))
+          if (!atlas) reject(new Error('Failed to parse the atlas'))
           else resolve(atlas)
         },
       )
@@ -195,7 +195,7 @@ export async function loadSpineAsset(
       atlasResponse.text(),
     ])
     const pages = parseAtlasPages(atlasText)
-    if (!pages.length) throw new Error('Atlas 中没有可用的纹理页')
+    if (!pages.length) throw new Error('The atlas contains no texture pages')
 
     const loadedPages = await Promise.all(
       pages.map(async (page) => {
