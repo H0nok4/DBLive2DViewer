@@ -76,7 +76,7 @@ function App() {
     () => new Set((initialParams.get('states') ?? '').split(',').filter(Boolean)),
   )
   const [skeletonSkin, setSkeletonSkin] = useState('default')
-  const [metadata, setMetadata] = useState<SpineMetadata>({ animations: [], stateAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
+  const [metadata, setMetadata] = useState<SpineMetadata>({ animations: [], stateAnimations: [], overlayAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
   const [loadState, setLoadState] = useState<LoadState>({ kind: 'idle' })
   const [assetSource, setAssetSource] = useState<AssetSource>('checking')
   const [paused, setPaused] = useState(false)
@@ -144,7 +144,7 @@ function App() {
 
   const resetPlayback = () => {
     setAnimation('')
-    setMetadata({ animations: [], stateAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
+    setMetadata({ animations: [], stateAnimations: [], overlayAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
     setPersistentAnimations(new Set())
     setSkeletonSkin('default')
     setPaused(false)
@@ -454,11 +454,14 @@ function App() {
                 <div className="animation-list">
                   {motionAnimations.map((name) => {
                     const index = metadata.animations.indexOf(name)
+                    const isOverlay = metadata.overlayAnimations.includes(name)
                     return (
-                      <div key={name} className={`animation-row ${animation === name ? 'selected' : ''}`}>
+                      <div key={name} className={`animation-row ${animation === name ? 'selected' : ''} ${isOverlay ? 'overlay' : ''}`}>
                         <button className="animation-play" onClick={() => playAnimation(name)}>
                           <span>{String(index + 1).padStart(2, '0')}</span><strong>{name}</strong>
-                          {animation === name && <i>PLAYING</i>}
+                          {(animation === name || isOverlay) && (
+                            <i>{isOverlay ? (animation === name ? '叠加播放' : '叠加') : 'PLAYING'}</i>
+                          )}
                         </button>
                       </div>
                     )
@@ -467,6 +470,9 @@ function App() {
                 </div>
                 {metadata.stateAnimations.length > 0 && (
                   <p className="state-animation-hint"><i />已自动识别 {metadata.stateAnimations.length} 个附件或颜色状态；开关结果会保存在分享链接中。</p>
+                )}
+                {metadata.overlayAnimations.some((name) => motionAnimations.includes(name)) && (
+                  <p className="state-animation-hint overlay-animation-hint"><i />标记“叠加”的局部动作会保留 Idle 底层，避免未控制的骨骼静止或备用附件同时出现。</p>
                 )}
                 {metadata.variantGroups.length > 1 && (
                   <p className="state-animation-hint"><i />已识别 {metadata.variantGroups.join(' / ')} 共 {metadata.variantGroups.length} 套重叠人物形态；播放动作时自动隐藏非活动形态。</p>

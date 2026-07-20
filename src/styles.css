@@ -378,12 +378,16 @@ input[type='range'] { accent-color: var(--acid); cursor: pointer; height: 3px; }
 .animation-row { min-height: 38px; display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; border-bottom: 1px solid rgba(255,255,255,.055); background: #0e1113; color: #a9afad; }
 .animation-row:hover { background: #171b1d; color: #e2e5e1; }
 .animation-row.selected { color: var(--acid); background: rgba(217,255,103,.08); }
+.animation-row.overlay { box-shadow: inset 2px 0 rgba(111,196,255,.38); }
+.animation-row.overlay.selected { box-shadow: inset 2px 0 var(--acid); }
 .animation-play { min-width: 0; min-height: 37px; display: grid; grid-template-columns: 27px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 6px 9px; border: 0; text-align: left; background: transparent; color: inherit; cursor: pointer; }
 .animation-play span { color: #596160; font-size: 8px; }
 .animation-play strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 520; }
 .animation-play i { color: #8da94f; font-size: 7px; font-style: normal; letter-spacing: .12em; }
+.animation-row.overlay:not(.selected) .animation-play i { color: #6fc4ff; }
 .state-animation-hint { display: flex; align-items: flex-start; gap: 7px; margin: 9px 0 0; color: #78827f; font-size: 8px; line-height: 1.55; }
 .state-animation-hint i { width: 5px; height: 5px; flex: 0 0 auto; margin-top: 4px; border-radius: 50%; background: var(--acid); box-shadow: 0 0 7px rgba(217,255,103,.55); }
+.overlay-animation-hint i { background: #6fc4ff; box-shadow: 0 0 7px rgba(111,196,255,.55); }
 .control-skeleton { padding: 8px; display: grid; gap: 6px; }
 .control-skeleton i { height: 25px; background: linear-gradient(90deg, #171b1d, #24292a, #171b1d); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }

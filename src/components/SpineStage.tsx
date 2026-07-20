@@ -57,6 +57,10 @@ interface SpineInstance {
 
 type CharacterVariantGroup = string
 
+const OVERLAY_TRACK_INDEX = 1
+const STATE_TRACK_OFFSET = 2
+const OVERLAY_BONE_COVERAGE = 0.35
+
 interface CharacterVariantProfile {
   animationGroups: ReadonlyMap<string, CharacterVariantGroup>
   defaultGroup: CharacterVariantGroup
@@ -100,11 +104,53 @@ function preferredAnimation(spine: Spine, requested: string) {
   return animations.find((name) => /(^|_)idle(?:_?\d+)?($|_)/i.test(name)) ?? animations[0] ?? ''
 }
 
+function idleAnimation(spine: Spine) {
+  return spine.spineData.animations.find((animation) => /(^|_)idle(?:_?\d+)?($|_)/i.test(animation.name))
+}
+
+function animationBoneIndexes(animation: Spine['spineData']['animations'][number]) {
+  const indexes = new Set<number>()
+  for (const timeline of animation.timelines) {
+    const index = timelineBoneIndex(timeline)
+    if (index !== undefined) indexes.add(index)
+  }
+  return indexes
+}
+
+function isOverlayAnimation(spine: Spine, animationName: string) {
+  const animation = spine.spineData.findAnimation(animationName)
+  const idle = idleAnimation(spine)
+  if (!animation || !idle || animation === idle) return false
+
+  const idleBones = animationBoneIndexes(idle).size
+  if (idleBones < 10) return false
+  return animationBoneIndexes(animation).size / idleBones < OVERLAY_BONE_COVERAGE
+}
+
+function collectOverlayAnimations(spine: Spine) {
+  return spine.spineData.animations
+    .filter((animation) => isOverlayAnimation(spine, animation.name))
+    .map((animation) => animation.name)
+}
+
 function applyAnimation(spine: Spine, requested: string, loop: boolean) {
   const next = preferredAnimation(spine, requested)
-  if (next) spine.state.setAnimation(0, next, loop)
+  spine.state.clearTrack(0)
+  spine.state.clearTrack(OVERLAY_TRACK_INDEX)
+  spine.skeleton.setToSetupPose()
+
+  let trackIndex = 0
+  if (next && isOverlayAnimation(spine, next)) {
+    const idle = idleAnimation(spine)
+    if (idle) spine.state.setAnimation(0, idle.name, true)
+    const entry = spine.state.setAnimation(OVERLAY_TRACK_INDEX, next, loop)
+    if (!loop) entry.trackEnd = entry.animationEnd
+    trackIndex = OVERLAY_TRACK_INDEX
+  } else if (next) {
+    spine.state.setAnimation(0, next, loop)
+  }
   spine.update(0)
-  return next
+  return { name: next, trackIndex }
 }
 
 function colorsMatch(
@@ -175,7 +221,7 @@ function collectPersistentStateAnimations(spine: Spine) {
 
 function stateTrackIndex(spine: Spine, animationName: string) {
   const index = spine.spineData.animations.findIndex((animation) => animation.name === animationName)
-  return index < 0 ? undefined : index + 1
+  return index < 0 ? undefined : index + STATE_TRACK_OFFSET
 }
 
 function restoreTrackedPose(spine: Spine) {
@@ -543,6 +589,7 @@ export function SpineStage({
   const spineRef = useRef<Spine | null>(null)
   const spineLayersRef = useRef<Spine[]>([])
   const spineInstancesRef = useRef<SpineInstance[]>([])
+  const playbackTrackIndexRef = useRef(0)
   const activeStateAnimationsRef = useRef<Set<string>>(new Set())
   const requestedStateAnimationsRef = useRef<ReadonlySet<string>>(new Set(persistentAnimations))
   const hiddenLayerIdsRef = useRef<ReadonlySet<string>>(new Set(hiddenLayerIds))
@@ -597,6 +644,7 @@ export function SpineStage({
     spineRef.current = null
     spineLayersRef.current = []
     spineInstancesRef.current = []
+    playbackTrackIndexRef.current = 0
     activeStateAnimationsRef.current.clear()
     characterVariantProfileRef.current = undefined
     activeCharacterGroupRef.current = undefined
@@ -714,10 +762,13 @@ export function SpineStage({
           const identity = layerIdentity(layer)
           const instance: SpineInstance = { ...identity, spine }
           lockLayerVisibility(instance, hiddenLayerIdsRef, automaticHiddenSlotIndexesRef)
-          applyAnimation(spine, animation, loop)
+          const playback = applyAnimation(spine, animation, loop)
           applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
           spine.state.timeScale = paused ? 0 : speed
-          if (layer.layer === 'main') mainSpine = spine
+          if (layer.layer === 'main') {
+            mainSpine = spine
+            playbackTrackIndexRef.current = playback.trackIndex
+          }
           spineInstances.push(instance)
           group.addChild(spine)
         }
@@ -748,6 +799,7 @@ export function SpineStage({
         onMetadata({
           animations,
           stateAnimations: collectPersistentStateAnimations(mainSpine),
+          overlayAnimations: collectOverlayAnimations(mainSpine),
           variantGroups: [...(characterVariantProfileRef.current?.slotIndexes.keys() ?? [])]
             .sort((left, right) => left.localeCompare(right)),
           skins,
@@ -761,7 +813,8 @@ export function SpineStage({
           const now = performance.now()
           if (now - lastProgressRef.current < 120) return
           lastProgressRef.current = now
-          const entry = mainSpine.state.tracks[0]
+          const entry = mainSpine.state.tracks[playbackTrackIndexRef.current]
+            ?? mainSpine.state.tracks[0]
           if (!entry) return
           const duration = Math.max(0, entry.animationEnd - entry.animationStart)
           const current = duration > 0 ? entry.trackTime % duration : 0
@@ -790,7 +843,10 @@ export function SpineStage({
   useEffect(() => {
     const mainSpine = spineRef.current
     if (!mainSpine || !animation) return
-    for (const spine of spineLayersRef.current) applyAnimation(spine, animation, loop)
+    for (const spine of spineLayersRef.current) {
+      const playback = applyAnimation(spine, animation, loop)
+      if (spine === mainSpine) playbackTrackIndexRef.current = playback.trackIndex
+    }
     updateAutomaticCharacterVisibility(preferredAnimation(mainSpine, animation))
     for (const instance of spineInstancesRef.current) {
       applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)

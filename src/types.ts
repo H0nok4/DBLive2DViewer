@@ -51,6 +51,7 @@ export interface AssetManifest {
 export interface SpineMetadata {
   animations: string[]
   stateAnimations: string[]
+  overlayAnimations: string[]
   variantGroups: string[]
   skins: string[]
   slots: number
