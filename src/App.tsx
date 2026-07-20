@@ -76,7 +76,7 @@ function App() {
     () => new Set((initialParams.get('states') ?? '').split(',').filter(Boolean)),
   )
   const [skeletonSkin, setSkeletonSkin] = useState('default')
-  const [metadata, setMetadata] = useState<SpineMetadata>({ animations: [], stateAnimations: [], skins: [], slots: 0, bones: 0 })
+  const [metadata, setMetadata] = useState<SpineMetadata>({ animations: [], stateAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
   const [loadState, setLoadState] = useState<LoadState>({ kind: 'idle' })
   const [assetSource, setAssetSource] = useState<AssetSource>('checking')
   const [paused, setPaused] = useState(false)
@@ -144,7 +144,7 @@ function App() {
 
   const resetPlayback = () => {
     setAnimation('')
-    setMetadata({ animations: [], stateAnimations: [], skins: [], slots: 0, bones: 0 })
+    setMetadata({ animations: [], stateAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
     setPersistentAnimations(new Set())
     setSkeletonSkin('default')
     setPaused(false)
@@ -343,6 +343,7 @@ function App() {
             effects={selectedVariant.effects}
             animation={animation}
             persistentAnimations={persistentAnimationList}
+            detectCharacterVariants={selectedEntry.category === 'character'}
             skin={skeletonSkin}
             loop={loop}
             paused={paused}
@@ -466,6 +467,9 @@ function App() {
                 </div>
                 {metadata.stateAnimations.length > 0 && (
                   <p className="state-animation-hint"><i />已自动识别 {metadata.stateAnimations.length} 个附件或颜色状态；开关结果会保存在分享链接中。</p>
+                )}
+                {metadata.variantGroups.length > 1 && (
+                  <p className="state-animation-hint"><i />已识别 {metadata.variantGroups.join(' / ')} 共 {metadata.variantGroups.length} 套重叠人物形态；播放动作时自动隐藏非活动形态。</p>
                 )}
               </section>
 

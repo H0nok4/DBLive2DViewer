@@ -18,6 +18,7 @@ interface SpineStageProps {
   effects: SpineEffect[]
   animation: string
   persistentAnimations: string[]
+  detectCharacterVariants: boolean
   skin: string
   loop: boolean
   paused: boolean
@@ -54,6 +55,21 @@ interface SpineInstance {
   spine: Spine
 }
 
+type CharacterVariantGroup = string
+
+interface CharacterVariantProfile {
+  animationGroups: ReadonlyMap<string, CharacterVariantGroup>
+  defaultGroup: CharacterVariantGroup
+  slotIndexes: ReadonlyMap<CharacterVariantGroup, ReadonlySet<number>>
+}
+
+interface CharacterVariantBounds {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
 function positionGroup(
   group: Container,
   app: Application,
@@ -81,7 +97,7 @@ function positionGroup(
 function preferredAnimation(spine: Spine, requested: string) {
   const animations = spine.spineData.animations.map((item) => item.name)
   if (requested && animations.includes(requested)) return requested
-  return animations.find((name) => /(^|_)idle($|_)/i.test(name)) ?? animations[0] ?? ''
+  return animations.find((name) => /(^|_)idle(?:_?\d+)?($|_)/i.test(name)) ?? animations[0] ?? ''
 }
 
 function applyAnimation(spine: Spine, requested: string, loop: boolean) {
@@ -200,6 +216,219 @@ function timelineSlotIndex(timeline: unknown) {
   return typeof value === 'number' && Number.isInteger(value) ? value : undefined
 }
 
+function timelineBoneIndex(timeline: unknown) {
+  if (!timeline || typeof timeline !== 'object' || !('boneIndex' in timeline)) return undefined
+  const value = Reflect.get(timeline, 'boneIndex')
+  return typeof value === 'number' && Number.isInteger(value) ? value : undefined
+}
+
+function characterVariantGroup(name: string): CharacterVariantGroup | undefined {
+  const match = name.match(/^([a-z][a-z0-9]{0,11})_/i)
+  return match?.[1].toUpperCase()
+}
+
+function dominantCharacterGroup(
+  counts: ReadonlyMap<CharacterVariantGroup, number>,
+  minimum: number,
+) {
+  const ranked = [...counts].sort((left, right) => right[1] - left[1])
+  const [first, second] = ranked
+  if (!first || first[1] < minimum || first[1] < (second?.[1] ?? 0) * 2) return undefined
+  return first[0]
+}
+
+function animationBoneGroup(
+  spine: Spine,
+  animation: Spine['spineData']['animations'][number],
+  candidates: ReadonlySet<CharacterVariantGroup>,
+) {
+  const counts = new Map([...candidates].map((group) => [group, 0]))
+  for (const timeline of animation.timelines) {
+    const boneIndex = timelineBoneIndex(timeline)
+    if (boneIndex === undefined) continue
+    const group = characterVariantGroup(spine.spineData.bones[boneIndex]?.name ?? '')
+    if (group && counts.has(group)) counts.set(group, (counts.get(group) ?? 0) + 1)
+  }
+  return dominantCharacterGroup(counts, 8)
+}
+
+function animationSlotGroup(
+  spine: Spine,
+  animation: Spine['spineData']['animations'][number],
+  candidates: ReadonlySet<CharacterVariantGroup>,
+) {
+  const counts = new Map([...candidates].map((group) => [group, 0]))
+  for (const timeline of animation.timelines) {
+    const slotIndex = timelineSlotIndex(timeline)
+    if (slotIndex === undefined) continue
+    const group = characterVariantGroup(spine.spineData.slots[slotIndex]?.name ?? '')
+    if (group && counts.has(group)) counts.set(group, (counts.get(group) ?? 0) + 1)
+  }
+  return dominantCharacterGroup(counts, 4)
+}
+
+function animationNameGroup(
+  name: string,
+  candidates: ReadonlySet<CharacterVariantGroup>,
+): CharacterVariantGroup | undefined {
+  for (const group of candidates) {
+    const escaped = group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (new RegExp(`(?:^|[_-])${escaped}(?:\\d+)?(?:[_-]|$)`, 'i').test(name)) return group
+  }
+  return undefined
+}
+
+function attachmentVertices(slot: Skeleton['slots'][number]) {
+  const attachment = slot.getAttachment()
+  if (!attachment || !isRenderableAttachment(attachment.type)) return undefined
+  const computeWorldVertices = Reflect.get(attachment, 'computeWorldVertices')
+  if (typeof computeWorldVertices !== 'function') return undefined
+
+  if (attachment.type === AttachmentType.Region) {
+    const vertices = new Float32Array(8)
+    computeWorldVertices.call(attachment, slot.bone, vertices, 0, 2)
+    return vertices
+  }
+
+  const worldVerticesLength = Reflect.get(attachment, 'worldVerticesLength')
+  if (typeof worldVerticesLength !== 'number' || worldVerticesLength < 2) return undefined
+  const vertices = new Float32Array(worldVerticesLength)
+  computeWorldVertices.call(attachment, slot, 0, worldVerticesLength, vertices, 0, 2)
+  return vertices
+}
+
+function collectCharacterVariantBounds(
+  spine: Spine,
+  groups: ReadonlySet<CharacterVariantGroup>,
+) {
+  const skeleton = createPoseSkeleton(spine)
+  skeleton.updateWorldTransform()
+  const bounds = new Map<CharacterVariantGroup, CharacterVariantBounds>()
+
+  for (const slot of skeleton.slots) {
+    const group = characterVariantGroup(slot.data.name)
+    if (!group || !groups.has(group)) continue
+    const vertices = attachmentVertices(slot)
+    if (!vertices) continue
+    const current = bounds.get(group) ?? {
+      minX: Number.POSITIVE_INFINITY,
+      minY: Number.POSITIVE_INFINITY,
+      maxX: Number.NEGATIVE_INFINITY,
+      maxY: Number.NEGATIVE_INFINITY,
+    }
+    for (let index = 0; index < vertices.length; index += 2) {
+      current.minX = Math.min(current.minX, vertices[index])
+      current.minY = Math.min(current.minY, vertices[index + 1])
+      current.maxX = Math.max(current.maxX, vertices[index])
+      current.maxY = Math.max(current.maxY, vertices[index + 1])
+    }
+    bounds.set(group, current)
+  }
+  return bounds
+}
+
+function characterVariantOverlap(left: CharacterVariantBounds, right: CharacterVariantBounds) {
+  const intersectionWidth = Math.max(0, Math.min(left.maxX, right.maxX) - Math.max(left.minX, right.minX))
+  const intersectionHeight = Math.max(0, Math.min(left.maxY, right.maxY) - Math.max(left.minY, right.minY))
+  const leftArea = Math.max(0, left.maxX - left.minX) * Math.max(0, left.maxY - left.minY)
+  const rightArea = Math.max(0, right.maxX - right.minX) * Math.max(0, right.maxY - right.minY)
+  const smallerArea = Math.min(leftArea, rightArea)
+  return smallerArea > 0 ? intersectionWidth * intersectionHeight / smallerArea : 0
+}
+
+function largestOverlappingVariantGroup(
+  groups: ReadonlySet<CharacterVariantGroup>,
+  bounds: ReadonlyMap<CharacterVariantGroup, CharacterVariantBounds>,
+  slotIndexes: ReadonlyMap<CharacterVariantGroup, ReadonlySet<number>>,
+  boneCounts: ReadonlyMap<CharacterVariantGroup, number>,
+) {
+  const remaining = new Set(groups)
+  const components: CharacterVariantGroup[][] = []
+  while (remaining.size) {
+    const first = remaining.values().next().value as CharacterVariantGroup
+    const component: CharacterVariantGroup[] = []
+    const queue = [first]
+    remaining.delete(first)
+    while (queue.length) {
+      const group = queue.shift()!
+      component.push(group)
+      const groupBounds = bounds.get(group)
+      if (!groupBounds) continue
+      for (const candidate of [...remaining]) {
+        const candidateBounds = bounds.get(candidate)
+        const slotSizes = [slotIndexes.get(group)?.size ?? 0, slotIndexes.get(candidate)?.size ?? 0]
+        const boneSizes = [boneCounts.get(group) ?? 0, boneCounts.get(candidate) ?? 0]
+        const slotSimilarity = Math.min(...slotSizes) / Math.max(...slotSizes)
+        const boneSimilarity = Math.min(...boneSizes) / Math.max(...boneSizes)
+        if (!candidateBounds
+          || characterVariantOverlap(groupBounds, candidateBounds) < 0.45
+          || slotSimilarity < 0.45
+          || boneSimilarity < 0.4) continue
+        remaining.delete(candidate)
+        queue.push(candidate)
+      }
+    }
+    if (component.length >= 2) components.push(component)
+  }
+  return components.sort((left, right) => {
+    const size = (component: CharacterVariantGroup[]) => component.reduce(
+      (total, group) => total + (slotIndexes.get(group)?.size ?? 0),
+      0,
+    )
+    return size(right) - size(left)
+  })[0]
+}
+
+function collectCharacterVariantProfile(spine: Spine): CharacterVariantProfile | undefined {
+  const slotIndexes = new Map<CharacterVariantGroup, Set<number>>()
+  const boneCounts = new Map<CharacterVariantGroup, number>()
+  for (const slot of spine.spineData.slots) {
+    const group = characterVariantGroup(slot.name)
+    if (!group) continue
+    if (!slotIndexes.has(group)) slotIndexes.set(group, new Set())
+    slotIndexes.get(group)!.add(slot.index)
+  }
+  for (const bone of spine.spineData.bones) {
+    const group = characterVariantGroup(bone.name)
+    if (group) boneCounts.set(group, (boneCounts.get(group) ?? 0) + 1)
+  }
+
+  const candidates = new Set(
+    [...slotIndexes]
+      .filter(([group, indexes]) => indexes.size >= 40 && (boneCounts.get(group) ?? 0) >= 60)
+      .map(([group]) => group),
+  )
+  if (candidates.size < 2) return undefined
+
+  const animationGroups = new Map<string, CharacterVariantGroup>()
+  const motionGroups = new Set<CharacterVariantGroup>()
+  for (const animation of spine.spineData.animations) {
+    const boneGroup = animationBoneGroup(spine, animation, candidates)
+    if (boneGroup) motionGroups.add(boneGroup)
+    const group = boneGroup
+      ?? animationNameGroup(animation.name, candidates)
+      ?? animationSlotGroup(spine, animation, candidates)
+    if (group) animationGroups.set(animation.name, group)
+  }
+
+  if (motionGroups.size < 2) return undefined
+
+  const bounds = collectCharacterVariantBounds(spine, motionGroups)
+  const overlappingGroups = largestOverlappingVariantGroup(motionGroups, bounds, slotIndexes, boneCounts)
+  if (!overlappingGroups) return undefined
+  const selectedGroups = new Set(overlappingGroups)
+  const selectedSlotIndexes = new Map(
+    [...slotIndexes].filter(([group]) => selectedGroups.has(group)),
+  )
+  const selectedAnimationGroups = new Map(
+    [...animationGroups].filter(([, group]) => selectedGroups.has(group)),
+  )
+
+  const idle = spine.spineData.animations.find((item) => /(^|_)idle(?:_?\d+)?($|_)/i.test(item.name))
+  const defaultGroup = (idle && selectedAnimationGroups.get(idle.name)) ?? overlappingGroups[0]
+  return { animationGroups: selectedAnimationGroups, defaultGroup, slotIndexes: selectedSlotIndexes }
+}
+
 function renderableSlotIndexes(spine: Spine) {
   const indexes = new Set<number>()
   for (const skin of spine.spineData.skins) {
@@ -251,17 +480,27 @@ function collectLayerInfo(instances: SpineInstance[], requestedAnimation: string
   return result
 }
 
-function applyLayerVisibility(instance: SpineInstance, hiddenLayerIds: ReadonlySet<string>) {
+function applyLayerVisibility(
+  instance: SpineInstance,
+  hiddenLayerIds: ReadonlySet<string>,
+  automaticHiddenSlotIndexes: ReadonlySet<number>,
+) {
   for (let index = 0; index < instance.spine.slotContainers.length; index += 1) {
-    instance.spine.slotContainers[index].renderable = !hiddenLayerIds.has(`${instance.id}::${index}`)
+    const manuallyHidden = hiddenLayerIds.has(`${instance.id}::${index}`)
+    const automaticallyHidden = instance.kind === 'main' && automaticHiddenSlotIndexes.has(index)
+    instance.spine.slotContainers[index].renderable = !manuallyHidden && !automaticallyHidden
   }
 }
 
-function lockLayerVisibility(instance: SpineInstance, hiddenLayerIdsRef: React.RefObject<ReadonlySet<string>>) {
+function lockLayerVisibility(
+  instance: SpineInstance,
+  hiddenLayerIdsRef: React.RefObject<ReadonlySet<string>>,
+  automaticHiddenSlotIndexesRef: React.RefObject<ReadonlySet<number>>,
+) {
   const originalUpdate = instance.spine.update.bind(instance.spine)
   instance.spine.update = (delta: number) => {
     originalUpdate(delta)
-    applyLayerVisibility(instance, hiddenLayerIdsRef.current)
+    applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
   }
 }
 
@@ -280,6 +519,7 @@ export function SpineStage({
   effects,
   animation,
   persistentAnimations,
+  detectCharacterVariants,
   skin,
   loop,
   paused,
@@ -306,6 +546,9 @@ export function SpineStage({
   const activeStateAnimationsRef = useRef<Set<string>>(new Set())
   const requestedStateAnimationsRef = useRef<ReadonlySet<string>>(new Set(persistentAnimations))
   const hiddenLayerIdsRef = useRef<ReadonlySet<string>>(new Set(hiddenLayerIds))
+  const characterVariantProfileRef = useRef<CharacterVariantProfile | undefined>(undefined)
+  const activeCharacterGroupRef = useRef<CharacterVariantGroup | undefined>(undefined)
+  const automaticHiddenSlotIndexesRef = useRef<ReadonlySet<number>>(new Set())
   const loadedAssetsRef = useRef<LoadedSpineAsset[]>([])
   const boundsRef = useRef<Rectangle | undefined>(undefined)
   const offsetRef = useRef<ViewOffset>({ x: 0, y: 0 })
@@ -316,6 +559,25 @@ export function SpineStage({
   const effectKey = effects.map((effect) => `${effect.layer}:${effect.asset.id}`).join('|')
   const persistentAnimationKey = persistentAnimations.join('|')
   requestedStateAnimationsRef.current = new Set(persistentAnimations)
+
+  const updateAutomaticCharacterVisibility = (requestedAnimation: string) => {
+    const profile = characterVariantProfileRef.current
+    if (!profile) {
+      automaticHiddenSlotIndexesRef.current = new Set()
+      activeCharacterGroupRef.current = undefined
+      return
+    }
+    const nextGroup = profile.animationGroups.get(requestedAnimation)
+      ?? activeCharacterGroupRef.current
+      ?? profile.defaultGroup
+    activeCharacterGroupRef.current = nextGroup
+    const hiddenIndexes = new Set<number>()
+    for (const [group, indexes] of profile.slotIndexes) {
+      if (group === nextGroup) continue
+      for (const index of indexes) hiddenIndexes.add(index)
+    }
+    automaticHiddenSlotIndexesRef.current = hiddenIndexes
+  }
 
   const layout = () => {
     const group = groupRef.current
@@ -336,6 +598,9 @@ export function SpineStage({
     spineLayersRef.current = []
     spineInstancesRef.current = []
     activeStateAnimationsRef.current.clear()
+    characterVariantProfileRef.current = undefined
+    activeCharacterGroupRef.current = undefined
+    automaticHiddenSlotIndexesRef.current = new Set()
     loadedAssetsRef.current = []
     boundsRef.current = undefined
   }
@@ -448,9 +713,9 @@ export function SpineStage({
           }
           const identity = layerIdentity(layer)
           const instance: SpineInstance = { ...identity, spine }
-          lockLayerVisibility(instance, hiddenLayerIdsRef)
+          lockLayerVisibility(instance, hiddenLayerIdsRef, automaticHiddenSlotIndexesRef)
           applyAnimation(spine, animation, loop)
-          applyLayerVisibility(instance, hiddenLayerIdsRef.current)
+          applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
           spine.state.timeScale = paused ? 0 : speed
           if (layer.layer === 'main') mainSpine = spine
           spineInstances.push(instance)
@@ -458,7 +723,15 @@ export function SpineStage({
         }
 
         if (!mainSpine) throw new Error('角色主骨架未能加载')
+        characterVariantProfileRef.current = detectCharacterVariants
+          ? collectCharacterVariantProfile(mainSpine)
+          : undefined
+        activeCharacterGroupRef.current = undefined
+        updateAutomaticCharacterVisibility(preferredAnimation(mainSpine, animation))
         syncPersistentAnimations(mainSpine, requestedStateAnimationsRef.current, activeStateAnimationsRef.current)
+        for (const instance of spineInstances) {
+          applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
+        }
         loadedAssetsRef.current = layers.map((layer) => layer.resource)
         spineLayersRef.current = group.children.filter((child): child is Spine => child instanceof Spine)
         spineInstancesRef.current = spineInstances
@@ -475,6 +748,8 @@ export function SpineStage({
         onMetadata({
           animations,
           stateAnimations: collectPersistentStateAnimations(mainSpine),
+          variantGroups: [...(characterVariantProfileRef.current?.slotIndexes.keys() ?? [])]
+            .sort((left, right) => left.localeCompare(right)),
           skins,
           slots: mainSpine.spineData.slots.length,
           bones: mainSpine.spineData.bones.length,
@@ -510,13 +785,16 @@ export function SpineStage({
       abortController.abort()
       if (tickerHandler) app.ticker?.remove(tickerHandler)
     }
-  }, [asset.id, effectKey, rendererReady, retryKey])
+  }, [asset.id, effectKey, detectCharacterVariants, rendererReady, retryKey])
 
   useEffect(() => {
     const mainSpine = spineRef.current
     if (!mainSpine || !animation) return
     for (const spine of spineLayersRef.current) applyAnimation(spine, animation, loop)
-    for (const instance of spineInstancesRef.current) applyLayerVisibility(instance, hiddenLayerIdsRef.current)
+    updateAutomaticCharacterVisibility(preferredAnimation(mainSpine, animation))
+    for (const instance of spineInstancesRef.current) {
+      applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
+    }
     onLayers(collectLayerInfo(spineInstancesRef.current, animation))
     onProgress(0, mainSpine.spineData.findAnimation(preferredAnimation(mainSpine, animation))?.duration ?? 0)
   }, [animation, loop])
@@ -525,7 +803,9 @@ export function SpineStage({
     const mainSpine = spineRef.current
     if (!mainSpine) return
     syncPersistentAnimations(mainSpine, new Set(persistentAnimations), activeStateAnimationsRef.current)
-    for (const instance of spineInstancesRef.current) applyLayerVisibility(instance, hiddenLayerIdsRef.current)
+    for (const instance of spineInstancesRef.current) {
+      applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
+    }
     onLayers(collectLayerInfo(spineInstancesRef.current, animation))
   }, [persistentAnimationKey])
 
@@ -537,14 +817,18 @@ export function SpineStage({
       spine.skeleton.setSlotsToSetupPose()
       spine.update(0)
     }
-    for (const instance of spineInstancesRef.current) applyLayerVisibility(instance, hiddenLayerIdsRef.current)
+    for (const instance of spineInstancesRef.current) {
+      applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
+    }
     onLayers(collectLayerInfo(spineInstancesRef.current, animation))
   }, [skin])
 
   useEffect(() => {
     const nextHiddenLayerIds = new Set(hiddenLayerIds)
     hiddenLayerIdsRef.current = nextHiddenLayerIds
-    for (const instance of spineInstancesRef.current) applyLayerVisibility(instance, nextHiddenLayerIds)
+    for (const instance of spineInstancesRef.current) {
+      applyLayerVisibility(instance, nextHiddenLayerIds, automaticHiddenSlotIndexesRef.current)
+    }
   }, [hiddenLayerIds])
 
   useEffect(() => {
