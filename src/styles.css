@@ -358,17 +358,30 @@ input[type='range'] { accent-color: var(--acid); cursor: pointer; height: 3px; }
 .switch-label input:checked + span { border-color: rgba(217,255,103,.45); }
 .switch-label input:checked + span::after { transform: translateX(12px); background: var(--acid); }
 .animation-list { max-height: 220px; overflow-y: auto; border: 1px solid var(--line); scrollbar-width: thin; }
-.animation-row { min-height: 38px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; border-bottom: 1px solid rgba(255,255,255,.055); background: #0e1113; color: #a9afad; }
+.control-subtitle { min-height: 28px; display: flex; align-items: center; justify-content: space-between; color: #78807e; font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
+.control-subtitle small { color: #555e5b; font-size: 8px; letter-spacing: 0; text-transform: none; }
+.state-switches { margin-bottom: 10px; border: 1px solid rgba(217,255,103,.2); background: rgba(217,255,103,.025); }
+.state-switches .control-subtitle { padding: 0 9px; border-bottom: 1px solid rgba(217,255,103,.12); color: #9bad72; }
+.state-switch { width: 100%; min-height: 38px; display: grid; grid-template-columns: 27px minmax(0, 1fr) auto 30px; align-items: center; gap: 6px; padding: 6px 9px; border: 0; border-bottom: 1px solid rgba(255,255,255,.055); background: #101416; color: #a9afad; text-align: left; cursor: pointer; }
+.state-switch:last-child { border-bottom: 0; }
+.state-switch:hover { background: #171d1a; color: #e2e5e1; }
+.state-switch > span { color: #596160; font-size: 8px; }
+.state-switch strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 560; }
+.state-switch em { color: #65706c; font-size: 8px; font-style: normal; }
+.state-switch i { width: 28px; height: 16px; position: relative; border: 1px solid #414946; background: #090c0d; }
+.state-switch i::after { content: ''; width: 10px; height: 10px; position: absolute; top: 2px; left: 3px; background: #626b68; transition: transform .18s ease, background .18s ease; }
+.state-switch[aria-checked="true"] { box-shadow: inset 2px 0 var(--acid); color: var(--acid); background: rgba(217,255,103,.07); }
+.state-switch[aria-checked="true"] em { color: #9db65f; }
+.state-switch[aria-checked="true"] i { border-color: rgba(217,255,103,.5); }
+.state-switch[aria-checked="true"] i::after { transform: translateX(11px); background: var(--acid); }
+.animation-subtitle { padding: 0 1px; }
+.animation-row { min-height: 38px; display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; border-bottom: 1px solid rgba(255,255,255,.055); background: #0e1113; color: #a9afad; }
 .animation-row:hover { background: #171b1d; color: #e2e5e1; }
 .animation-row.selected { color: var(--acid); background: rgba(217,255,103,.08); }
-.animation-row.is-persistent { box-shadow: inset 2px 0 var(--acid); }
 .animation-play { min-width: 0; min-height: 37px; display: grid; grid-template-columns: 27px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 6px 9px; border: 0; text-align: left; background: transparent; color: inherit; cursor: pointer; }
 .animation-play span { color: #596160; font-size: 8px; }
 .animation-play strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 520; }
 .animation-play i { color: #8da94f; font-size: 7px; font-style: normal; letter-spacing: .12em; }
-.state-toggle { align-self: center; min-width: 44px; height: 24px; margin-right: 7px; padding: 0 6px; border: 1px solid #3b4340; background: #131719; color: #737c79; font-size: 8px; cursor: pointer; }
-.state-toggle:hover { color: var(--acid); border-color: rgba(217,255,103,.45); }
-.state-toggle[aria-pressed="true"] { color: #182006; border-color: var(--acid); background: var(--acid); font-weight: 700; }
 .state-animation-hint { display: flex; align-items: flex-start; gap: 7px; margin: 9px 0 0; color: #78827f; font-size: 8px; line-height: 1.55; }
 .state-animation-hint i { width: 5px; height: 5px; flex: 0 0 auto; margin-top: 4px; border-radius: 50%; background: var(--acid); box-shadow: 0 0 7px rgba(217,255,103,.55); }
 .control-skeleton { padding: 8px; display: grid; gap: 6px; }

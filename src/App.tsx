@@ -101,6 +101,10 @@ function App() {
   const selectedVariant = selectedEntry.variants.find((variant) => variant.id === selectedVariantId) ?? firstVariant(selectedEntry)
   const persistentAnimationList = useMemo(() => [...persistentAnimations].sort(), [persistentAnimations])
   const persistentAnimationKey = persistentAnimationList.join(',')
+  const motionAnimations = useMemo(
+    () => metadata.animations.filter((name) => !metadata.stateAnimations.includes(name)),
+    [metadata.animations, metadata.stateAnimations],
+  )
 
   const filteredEntries = useMemo(() => {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
@@ -121,6 +125,22 @@ function App() {
     else params.delete('states')
     window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`)
   }, [selectedVariant.main.id, animation, persistentAnimationKey])
+
+  useEffect(() => {
+    if (!animation || !metadata.stateAnimations.includes(animation)) return
+    setPersistentAnimations((current) => {
+      if (current.has(animation)) return current
+      const next = new Set(current)
+      next.add(animation)
+      return next
+    })
+    setAnimation(
+      motionAnimations.find(isIdleAnimation)
+      ?? motionAnimations[0]
+      ?? '',
+    )
+    setPaused(false)
+  }, [animation, metadata.stateAnimations, motionAnimations])
 
   const resetPlayback = () => {
     setAnimation('')
@@ -146,13 +166,6 @@ function App() {
   const playAnimation = (name: string) => {
     setAnimation(name)
     setPaused(false)
-    if (!metadata.stateAnimations.includes(name)) return
-    setPersistentAnimations((current) => {
-      if (current.has(name)) return current
-      const next = new Set(current)
-      next.add(name)
-      return next
-    })
   }
 
   const togglePersistentAnimation = (name: string) => {
@@ -411,34 +424,48 @@ function App() {
               </section>
 
               <section className="control-section">
-                <div className="section-title"><span>02</span><h3>动画片段</h3><output>{metadata.animations.length}</output></div>
+                <div className="section-title"><span>02</span><h3>动画与状态</h3><output>{metadata.animations.length}</output></div>
+                {metadata.stateAnimations.length > 0 && (
+                  <div className="state-switches">
+                    <div className="control-subtitle"><span>状态开关</span><small>可叠加到任意动作</small></div>
+                    {metadata.stateAnimations.map((name) => {
+                      const isPersistent = persistentAnimations.has(name)
+                      const index = metadata.animations.indexOf(name)
+                      return (
+                        <button
+                          key={name}
+                          className="state-switch"
+                          role="switch"
+                          aria-checked={isPersistent}
+                          title={isPersistent ? '关闭并恢复这个服装或颜色状态' : '打开并保持这个服装或颜色状态'}
+                          onClick={() => togglePersistentAnimation(name)}
+                        >
+                          <span>{String(index + 1).padStart(2, '0')}</span>
+                          <strong>{name}</strong>
+                          <em>{isPersistent ? '开启' : '关闭'}</em>
+                          <i />
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+                <div className="control-subtitle animation-subtitle"><span>动作片段</span><small>{motionAnimations.length}</small></div>
                 <div className="animation-list">
-                  {metadata.animations.map((name, index) => {
-                    const isStateAnimation = metadata.stateAnimations.includes(name)
-                    const isPersistent = persistentAnimations.has(name)
+                  {motionAnimations.map((name) => {
+                    const index = metadata.animations.indexOf(name)
                     return (
-                      <div key={name} className={`animation-row ${animation === name ? 'selected' : ''} ${isPersistent ? 'is-persistent' : ''}`}>
+                      <div key={name} className={`animation-row ${animation === name ? 'selected' : ''}`}>
                         <button className="animation-play" onClick={() => playAnimation(name)}>
                           <span>{String(index + 1).padStart(2, '0')}</span><strong>{name}</strong>
                           {animation === name && <i>PLAYING</i>}
                         </button>
-                        {isStateAnimation && (
-                          <button
-                            className="state-toggle"
-                            aria-pressed={isPersistent}
-                            title={isPersistent ? '取消状态叠加并恢复原始形态' : '保持这个服装或颜色状态，并叠加到其他动画'}
-                            onClick={() => togglePersistentAnimation(name)}
-                          >
-                            {isPersistent ? '已保持' : '保持'}
-                          </button>
-                        )}
                       </div>
                     )
                   })}
                   {loadState.kind === 'loading' && <div className="control-skeleton"><i/><i/><i/></div>}
                 </div>
                 {metadata.stateAnimations.length > 0 && (
-                  <p className="state-animation-hint"><i />检测到 {metadata.stateAnimations.length} 个服装/颜色状态；点击动画会自动保持，可继续叠加其他动作。</p>
+                  <p className="state-animation-hint"><i />已自动识别 {metadata.stateAnimations.length} 个附件或颜色状态；开关结果会保存在分享链接中。</p>
                 )}
               </section>
 
