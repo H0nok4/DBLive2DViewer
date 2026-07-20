@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Application, Container, type Rectangle } from 'pixi.js'
-import { AttachmentType, Spine, SpineDebugRenderer } from '@pixi-spine/all-3.8'
+import { AttachmentType, MixBlend, MixDirection, Skeleton, Spine, SpineDebugRenderer } from '@pixi-spine/all-3.8'
 import type {
   AssetSource,
   LoadState,
@@ -17,6 +17,7 @@ interface SpineStageProps {
   asset: SpineAsset
   effects: SpineEffect[]
   animation: string
+  persistentAnimations: string[]
   skin: string
   loop: boolean
   paused: boolean
@@ -88,6 +89,105 @@ function applyAnimation(spine: Spine, requested: string, loop: boolean) {
   if (next) spine.state.setAnimation(0, next, loop)
   spine.update(0)
   return next
+}
+
+function colorsMatch(
+  left: { r: number; g: number; b: number; a: number } | null | undefined,
+  right: { r: number; g: number; b: number; a: number } | null | undefined,
+) {
+  if (!left || !right) return left === right
+  return Math.abs(left.r - right.r) < 0.0001
+    && Math.abs(left.g - right.g) < 0.0001
+    && Math.abs(left.b - right.b) < 0.0001
+    && Math.abs(left.a - right.a) < 0.0001
+}
+
+function arraysMatch(left: ArrayLike<number>, right: ArrayLike<number>) {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (Math.abs(left[index] - right[index]) >= 0.0001) return false
+  }
+  return true
+}
+
+function createPoseSkeleton(spine: Spine) {
+  const skeleton = new Skeleton(spine.spineData)
+  if (spine.skeleton.skin) skeleton.setSkin(spine.skeleton.skin)
+  skeleton.setSlotsToSetupPose()
+  return skeleton
+}
+
+function isPersistentStateAnimation(spine: Spine, animation: Spine['spineData']['animations'][number]) {
+  const hasMotionTimeline = animation.timelines.some((timeline) => {
+    return 'boneIndex' in timeline
+      || 'ikConstraintIndex' in timeline
+      || 'transformConstraintIndex' in timeline
+      || 'pathConstraintIndex' in timeline
+  })
+  if (hasMotionTimeline) return false
+
+  const setup = createPoseSkeleton(spine)
+  const posed = createPoseSkeleton(spine)
+  animation.apply(
+    posed,
+    -1,
+    animation.duration + 0.0001,
+    false,
+    [],
+    1,
+    MixBlend.setup,
+    MixDirection.mixIn,
+  )
+
+  const slotChanged = posed.slots.some((slot, index) => {
+    const setupSlot = setup.slots[index]
+    return slot.getAttachment() !== setupSlot.getAttachment()
+      || !colorsMatch(slot.color, setupSlot.color)
+      || !colorsMatch(slot.darkColor, setupSlot.darkColor)
+      || !arraysMatch(slot.deform, setupSlot.deform)
+  })
+  if (slotChanged) return true
+
+  return posed.drawOrder.some((slot, index) => slot.data.index !== setup.drawOrder[index].data.index)
+}
+
+function collectPersistentStateAnimations(spine: Spine) {
+  return spine.spineData.animations
+    .filter((animation) => isPersistentStateAnimation(spine, animation))
+    .map((animation) => animation.name)
+}
+
+function stateTrackIndex(spine: Spine, animationName: string) {
+  const index = spine.spineData.animations.findIndex((animation) => animation.name === animationName)
+  return index < 0 ? undefined : index + 1
+}
+
+function restoreTrackedPose(spine: Spine) {
+  spine.skeleton.setToSetupPose()
+  spine.state.apply(spine.skeleton)
+  spine.skeleton.updateWorldTransform()
+}
+
+function syncPersistentAnimations(spine: Spine, requested: ReadonlySet<string>, active: Set<string>) {
+  let removed = false
+  for (const name of [...active]) {
+    if (requested.has(name)) continue
+    const trackIndex = stateTrackIndex(spine, name)
+    if (trackIndex !== undefined) spine.state.clearTrack(trackIndex)
+    active.delete(name)
+    removed = true
+  }
+
+  for (const name of requested) {
+    if (active.has(name)) continue
+    const trackIndex = stateTrackIndex(spine, name)
+    if (trackIndex === undefined) continue
+    spine.state.setAnimation(trackIndex, name, false)
+    active.add(name)
+  }
+
+  if (removed) restoreTrackedPose(spine)
+  spine.update(0)
 }
 
 function isRenderableAttachment(type: AttachmentType) {
@@ -179,6 +279,7 @@ export function SpineStage({
   asset,
   effects,
   animation,
+  persistentAnimations,
   skin,
   loop,
   paused,
@@ -202,6 +303,8 @@ export function SpineStage({
   const spineRef = useRef<Spine | null>(null)
   const spineLayersRef = useRef<Spine[]>([])
   const spineInstancesRef = useRef<SpineInstance[]>([])
+  const activeStateAnimationsRef = useRef<Set<string>>(new Set())
+  const requestedStateAnimationsRef = useRef<ReadonlySet<string>>(new Set(persistentAnimations))
   const hiddenLayerIdsRef = useRef<ReadonlySet<string>>(new Set(hiddenLayerIds))
   const loadedAssetsRef = useRef<LoadedSpineAsset[]>([])
   const boundsRef = useRef<Rectangle | undefined>(undefined)
@@ -211,6 +314,8 @@ export function SpineStage({
   const lastProgressRef = useRef(0)
   const [rendererReady, setRendererReady] = useState(false)
   const effectKey = effects.map((effect) => `${effect.layer}:${effect.asset.id}`).join('|')
+  const persistentAnimationKey = persistentAnimations.join('|')
+  requestedStateAnimationsRef.current = new Set(persistentAnimations)
 
   const layout = () => {
     const group = groupRef.current
@@ -230,6 +335,7 @@ export function SpineStage({
     spineRef.current = null
     spineLayersRef.current = []
     spineInstancesRef.current = []
+    activeStateAnimationsRef.current.clear()
     loadedAssetsRef.current = []
     boundsRef.current = undefined
   }
@@ -352,6 +458,7 @@ export function SpineStage({
         }
 
         if (!mainSpine) throw new Error('角色主骨架未能加载')
+        syncPersistentAnimations(mainSpine, requestedStateAnimationsRef.current, activeStateAnimationsRef.current)
         loadedAssetsRef.current = layers.map((layer) => layer.resource)
         spineLayersRef.current = group.children.filter((child): child is Spine => child instanceof Spine)
         spineInstancesRef.current = spineInstances
@@ -367,6 +474,7 @@ export function SpineStage({
         const skins = mainSpine.spineData.skins.map((item) => item.name)
         onMetadata({
           animations,
+          stateAnimations: collectPersistentStateAnimations(mainSpine),
           skins,
           slots: mainSpine.spineData.slots.length,
           bones: mainSpine.spineData.bones.length,
@@ -400,7 +508,7 @@ export function SpineStage({
     return () => {
       cancelled = true
       abortController.abort()
-      if (tickerHandler) app.ticker.remove(tickerHandler)
+      if (tickerHandler) app.ticker?.remove(tickerHandler)
     }
   }, [asset.id, effectKey, rendererReady, retryKey])
 
@@ -414,11 +522,20 @@ export function SpineStage({
   }, [animation, loop])
 
   useEffect(() => {
+    const mainSpine = spineRef.current
+    if (!mainSpine) return
+    syncPersistentAnimations(mainSpine, new Set(persistentAnimations), activeStateAnimationsRef.current)
+    for (const instance of spineInstancesRef.current) applyLayerVisibility(instance, hiddenLayerIdsRef.current)
+    onLayers(collectLayerInfo(spineInstancesRef.current, animation))
+  }, [persistentAnimationKey])
+
+  useEffect(() => {
     if (!skin) return
     for (const spine of spineLayersRef.current) {
       if (!spine.spineData.findSkin(skin)) continue
       spine.skeleton.setSkinByName(skin)
       spine.skeleton.setSlotsToSetupPose()
+      spine.update(0)
     }
     for (const instance of spineInstancesRef.current) applyLayerVisibility(instance, hiddenLayerIdsRef.current)
     onLayers(collectLayerInfo(spineInstancesRef.current, animation))

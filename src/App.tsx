@@ -61,14 +61,22 @@ function variantOptionLabel(variant: SpineVariant) {
   return `${variant.label}${effectLabel}`
 }
 
+function isIdleAnimation(name: string) {
+  return /(^|_)idle(?:_?\d+)?($|_)/i.test(name)
+}
+
 function App() {
+  const initialParams = new URLSearchParams(window.location.search)
   const [selectedEntryId, setSelectedEntryId] = useState(initialSelection.entry.id)
   const [selectedVariantId, setSelectedVariantId] = useState(initialSelection.variant.id)
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<LibraryCategory>(initialSelection.entry.category)
-  const [animation, setAnimation] = useState(new URLSearchParams(window.location.search).get('animation') ?? '')
+  const [animation, setAnimation] = useState(initialParams.get('animation') ?? '')
+  const [persistentAnimations, setPersistentAnimations] = useState<Set<string>>(
+    () => new Set((initialParams.get('states') ?? '').split(',').filter(Boolean)),
+  )
   const [skeletonSkin, setSkeletonSkin] = useState('default')
-  const [metadata, setMetadata] = useState<SpineMetadata>({ animations: [], skins: [], slots: 0, bones: 0 })
+  const [metadata, setMetadata] = useState<SpineMetadata>({ animations: [], stateAnimations: [], skins: [], slots: 0, bones: 0 })
   const [loadState, setLoadState] = useState<LoadState>({ kind: 'idle' })
   const [assetSource, setAssetSource] = useState<AssetSource>('checking')
   const [paused, setPaused] = useState(false)
@@ -91,6 +99,8 @@ function App() {
 
   const selectedEntry = manifest.entries.find((entry) => entry.id === selectedEntryId) ?? manifest.entries[0]
   const selectedVariant = selectedEntry.variants.find((variant) => variant.id === selectedVariantId) ?? firstVariant(selectedEntry)
+  const persistentAnimationList = useMemo(() => [...persistentAnimations].sort(), [persistentAnimations])
+  const persistentAnimationKey = persistentAnimationList.join(',')
 
   const filteredEntries = useMemo(() => {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
@@ -107,12 +117,15 @@ function App() {
     params.set('model', selectedVariant.main.id)
     if (animation) params.set('animation', animation)
     else params.delete('animation')
+    if (persistentAnimationKey) params.set('states', persistentAnimationKey)
+    else params.delete('states')
     window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`)
-  }, [selectedVariant.main.id, animation])
+  }, [selectedVariant.main.id, animation, persistentAnimationKey])
 
   const resetPlayback = () => {
     setAnimation('')
-    setMetadata({ animations: [], skins: [], slots: 0, bones: 0 })
+    setMetadata({ animations: [], stateAnimations: [], skins: [], slots: 0, bones: 0 })
+    setPersistentAnimations(new Set())
     setSkeletonSkin('default')
     setPaused(false)
     setProgress({ current: 0, duration: 0 })
@@ -122,11 +135,41 @@ function App() {
 
   const handleMetadata = (next: SpineMetadata) => {
     setMetadata(next)
+    setPersistentAnimations((current) => new Set([...current].filter((name) => next.stateAnimations.includes(name))))
     setAnimation((current) => {
       if (current && next.animations.includes(current)) return current
-      return next.animations.find((name) => /(^|_)idle($|_)/i.test(name)) ?? next.animations[0] ?? ''
+      return next.animations.find(isIdleAnimation) ?? next.animations[0] ?? ''
     })
     setSkeletonSkin((current) => next.skins.includes(current) ? current : next.skins[0] ?? 'default')
+  }
+
+  const playAnimation = (name: string) => {
+    setAnimation(name)
+    setPaused(false)
+    if (!metadata.stateAnimations.includes(name)) return
+    setPersistentAnimations((current) => {
+      if (current.has(name)) return current
+      const next = new Set(current)
+      next.add(name)
+      return next
+    })
+  }
+
+  const togglePersistentAnimation = (name: string) => {
+    const removing = persistentAnimations.has(name)
+    if (removing && animation === name) {
+      const fallback = metadata.animations.find((candidate) =>
+        !metadata.stateAnimations.includes(candidate) && isIdleAnimation(candidate),
+      ) ?? metadata.animations.find((candidate) => !metadata.stateAnimations.includes(candidate)) ?? ''
+      setAnimation(fallback)
+      setPaused(false)
+    }
+    setPersistentAnimations((current) => {
+      const next = new Set(current)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
   }
 
   const selectEntry = (entry: LibraryEntry) => {
@@ -286,6 +329,7 @@ function App() {
             asset={selectedVariant.main}
             effects={selectedVariant.effects}
             animation={animation}
+            persistentAnimations={persistentAnimationList}
             skin={skeletonSkin}
             loop={loop}
             paused={paused}
@@ -369,14 +413,33 @@ function App() {
               <section className="control-section">
                 <div className="section-title"><span>02</span><h3>动画片段</h3><output>{metadata.animations.length}</output></div>
                 <div className="animation-list">
-                  {metadata.animations.map((name, index) => (
-                    <button key={name} className={animation === name ? 'selected' : ''} onClick={() => { setAnimation(name); setPaused(false) }}>
-                      <span>{String(index + 1).padStart(2, '0')}</span><strong>{name}</strong>
-                      {animation === name && <i>PLAYING</i>}
-                    </button>
-                  ))}
+                  {metadata.animations.map((name, index) => {
+                    const isStateAnimation = metadata.stateAnimations.includes(name)
+                    const isPersistent = persistentAnimations.has(name)
+                    return (
+                      <div key={name} className={`animation-row ${animation === name ? 'selected' : ''} ${isPersistent ? 'is-persistent' : ''}`}>
+                        <button className="animation-play" onClick={() => playAnimation(name)}>
+                          <span>{String(index + 1).padStart(2, '0')}</span><strong>{name}</strong>
+                          {animation === name && <i>PLAYING</i>}
+                        </button>
+                        {isStateAnimation && (
+                          <button
+                            className="state-toggle"
+                            aria-pressed={isPersistent}
+                            title={isPersistent ? '取消状态叠加并恢复原始形态' : '保持这个服装或颜色状态，并叠加到其他动画'}
+                            onClick={() => togglePersistentAnimation(name)}
+                          >
+                            {isPersistent ? '已保持' : '保持'}
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })}
                   {loadState.kind === 'loading' && <div className="control-skeleton"><i/><i/><i/></div>}
                 </div>
+                {metadata.stateAnimations.length > 0 && (
+                  <p className="state-animation-hint"><i />检测到 {metadata.stateAnimations.length} 个服装/颜色状态；点击动画会自动保持，可继续叠加其他动作。</p>
+                )}
               </section>
 
               <section className="control-section variant-section">

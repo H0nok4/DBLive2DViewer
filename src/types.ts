@@ -50,6 +50,7 @@ export interface AssetManifest {
 
 export interface SpineMetadata {
   animations: string[]
+  stateAnimations: string[]
   skins: string[]
   slots: number
   bones: number
