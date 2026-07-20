@@ -76,7 +76,7 @@ function App() {
     () => new Set((initialParams.get('states') ?? '').split(',').filter(Boolean)),
   )
   const [skeletonSkin, setSkeletonSkin] = useState('default')
-  const [metadata, setMetadata] = useState<SpineMetadata>({ animations: [], stateAnimations: [], overlayAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
+  const [metadata, setMetadata] = useState<SpineMetadata>({ animations: [], stateAnimations: [], stateGroups: [], overlayAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
   const [loadState, setLoadState] = useState<LoadState>({ kind: 'idle' })
   const [assetSource, setAssetSource] = useState<AssetSource>('checking')
   const [paused, setPaused] = useState(false)
@@ -128,10 +128,12 @@ function App() {
 
   useEffect(() => {
     if (!animation || !metadata.stateAnimations.includes(animation)) return
+    const group = metadata.stateGroups.find((candidate) => candidate.id === animation)
+    const stateId = group?.options[0]?.id
     setPersistentAnimations((current) => {
-      if (current.has(animation)) return current
+      if (!stateId || current.has(stateId)) return current
       const next = new Set(current)
-      next.add(animation)
+      next.add(stateId)
       return next
     })
     setAnimation(
@@ -140,11 +142,11 @@ function App() {
       ?? '',
     )
     setPaused(false)
-  }, [animation, metadata.stateAnimations, motionAnimations])
+  }, [animation, metadata.stateAnimations, metadata.stateGroups, motionAnimations])
 
   const resetPlayback = () => {
     setAnimation('')
-    setMetadata({ animations: [], stateAnimations: [], overlayAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
+    setMetadata({ animations: [], stateAnimations: [], stateGroups: [], overlayAnimations: [], variantGroups: [], skins: [], slots: 0, bones: 0 })
     setPersistentAnimations(new Set())
     setSkeletonSkin('default')
     setPaused(false)
@@ -155,7 +157,18 @@ function App() {
 
   const handleMetadata = (next: SpineMetadata) => {
     setMetadata(next)
-    setPersistentAnimations((current) => new Set([...current].filter((name) => next.stateAnimations.includes(name))))
+    setPersistentAnimations((current) => {
+      const selected = new Set<string>()
+      const selectedGroups = new Set<string>()
+      for (const group of next.stateGroups) {
+        const option = group.options.find((candidate) => current.has(candidate.id))
+          ?? (current.has(group.id) ? group.options[0] : undefined)
+        if (!option || group.conflicts.some((id) => selectedGroups.has(id))) continue
+        selected.add(option.id)
+        selectedGroups.add(group.id)
+      }
+      return selected
+    })
     setAnimation((current) => {
       if (current && next.animations.includes(current)) return current
       return next.animations.find(isIdleAnimation) ?? next.animations[0] ?? ''
@@ -168,19 +181,17 @@ function App() {
     setPaused(false)
   }
 
-  const togglePersistentAnimation = (name: string) => {
-    const removing = persistentAnimations.has(name)
-    if (removing && animation === name) {
-      const fallback = metadata.animations.find((candidate) =>
-        !metadata.stateAnimations.includes(candidate) && isIdleAnimation(candidate),
-      ) ?? metadata.animations.find((candidate) => !metadata.stateAnimations.includes(candidate)) ?? ''
-      setAnimation(fallback)
-      setPaused(false)
-    }
+  const selectVisualState = (groupId: string, stateId?: string) => {
+    const group = metadata.stateGroups.find((candidate) => candidate.id === groupId)
+    if (!group) return
     setPersistentAnimations((current) => {
       const next = new Set(current)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
+      for (const option of group.options) next.delete(option.id)
+      for (const conflictId of group.conflicts) {
+        const conflict = metadata.stateGroups.find((candidate) => candidate.id === conflictId)
+        for (const option of conflict?.options ?? []) next.delete(option.id)
+      }
+      if (stateId) next.add(stateId)
       return next
     })
   }
@@ -426,26 +437,43 @@ function App() {
 
               <section className="control-section">
                 <div className="section-title"><span>02</span><h3>动画与状态</h3><output>{metadata.animations.length}</output></div>
-                {metadata.stateAnimations.length > 0 && (
-                  <div className="state-switches">
-                    <div className="control-subtitle"><span>状态开关</span><small>可叠加到任意动作</small></div>
-                    {metadata.stateAnimations.map((name) => {
-                      const isPersistent = persistentAnimations.has(name)
-                      const index = metadata.animations.indexOf(name)
+                {metadata.stateGroups.length > 0 && (
+                  <div className="state-groups">
+                    <div className="control-subtitle"><span>状态设置</span><small>直接应用静态快照</small></div>
+                    {metadata.stateGroups.map((group) => {
+                      const selectedState = group.options.find((option) => persistentAnimations.has(option.id))
+                      const index = metadata.animations.indexOf(group.id)
                       return (
-                        <button
-                          key={name}
-                          className="state-switch"
-                          role="switch"
-                          aria-checked={isPersistent}
-                          title={isPersistent ? '关闭并恢复这个服装或颜色状态' : '打开并保持这个服装或颜色状态'}
-                          onClick={() => togglePersistentAnimation(name)}
-                        >
-                          <span>{String(index + 1).padStart(2, '0')}</span>
-                          <strong>{name}</strong>
-                          <em>{isPersistent ? '开启' : '关闭'}</em>
-                          <i />
-                        </button>
+                        <div className="state-group" key={group.id}>
+                          <div className="state-group-heading">
+                            <span>{String(index + 1).padStart(2, '0')}</span>
+                            <strong>{group.label}</strong>
+                            <small>{group.affectedSlots} SLOTS</small>
+                          </div>
+                          <div className="state-options" role="radiogroup" aria-label={`${group.label} 状态`}>
+                            <button
+                              role="radio"
+                              aria-checked={!selectedState}
+                              className={!selectedState ? 'active' : ''}
+                              onClick={() => selectVisualState(group.id)}
+                            >
+                              默认
+                            </button>
+                            {group.options.map((option) => (
+                              <button
+                                key={option.id}
+                                role="radio"
+                                aria-checked={selectedState?.id === option.id}
+                                className={selectedState?.id === option.id ? 'active' : ''}
+                                title={`取自动画 ${option.time.toFixed(2)} 秒附近的稳定视觉状态`}
+                                onClick={() => selectVisualState(group.id, option.id)}
+                              >
+                                {option.previewColor && <i style={{ backgroundColor: option.previewColor }} />}
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       )
                     })}
                   </div>
@@ -468,8 +496,8 @@ function App() {
                   })}
                   {loadState.kind === 'loading' && <div className="control-skeleton"><i/><i/><i/></div>}
                 </div>
-                {metadata.stateAnimations.length > 0 && (
-                  <p className="state-animation-hint"><i />已自动识别 {metadata.stateAnimations.length} 个附件或颜色状态；开关结果会保存在分享链接中。</p>
+                {metadata.stateGroups.length > 0 && (
+                  <p className="state-animation-hint"><i />已从 {metadata.stateGroups.length} 段动画中提取稳定快照；渐变、全隐藏过渡与结尾复原帧不会作为状态。</p>
                 )}
                 {metadata.overlayAnimations.some((name) => motionAnimations.includes(name)) && (
                   <p className="state-animation-hint overlay-animation-hint"><i />标记“叠加”的局部动作会保留 Idle 底层，避免未控制的骨骼静止或备用附件同时出现。</p>

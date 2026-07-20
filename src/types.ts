@@ -51,11 +51,27 @@ export interface AssetManifest {
 export interface SpineMetadata {
   animations: string[]
   stateAnimations: string[]
+  stateGroups: SpineStateGroup[]
   overlayAnimations: string[]
   variantGroups: string[]
   skins: string[]
   slots: number
   bones: number
+}
+
+export interface SpineStateOption {
+  id: string
+  label: string
+  time: number
+  previewColor?: string
+}
+
+export interface SpineStateGroup {
+  id: string
+  label: string
+  affectedSlots: number
+  conflicts: string[]
+  options: SpineStateOption[]
 }
 
 export type SpineLayerGroupKind = 'main' | 'back' | 'front'

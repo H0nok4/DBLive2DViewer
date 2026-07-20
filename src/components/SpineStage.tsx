@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { Application, Container, type Rectangle } from 'pixi.js'
-import { AttachmentType, MixBlend, MixDirection, Skeleton, Spine, SpineDebugRenderer } from '@pixi-spine/all-3.8'
+import {
+  AttachmentTimeline,
+  AttachmentType,
+  ColorTimeline,
+  DeformTimeline,
+  DrawOrderTimeline,
+  MixBlend,
+  MixDirection,
+  Skeleton,
+  Spine,
+  SpineDebugRenderer,
+  TwoColorTimeline,
+} from '@pixi-spine/all-3.8'
 import type {
   AssetSource,
   LoadState,
@@ -9,6 +21,7 @@ import type {
   SpineLayerGroupKind,
   SpineLayerInfo,
   SpineMetadata,
+  SpineStateGroup,
 } from '../types'
 import { assetUrlCandidates } from '../lib/asset-url'
 import { loadSpineAsset, type LoadedSpineAsset } from '../lib/spine-loader'
@@ -58,8 +71,38 @@ interface SpineInstance {
 type CharacterVariantGroup = string
 
 const OVERLAY_TRACK_INDEX = 1
-const STATE_TRACK_OFFSET = 2
 const OVERLAY_BONE_COVERAGE = 0.35
+const STATE_MIN_STABLE_DURATION = 0.1
+const STATE_MAX_OPTIONS = 6
+
+type ColorTuple = [number, number, number, number]
+
+interface SlotVisualSnapshot {
+  slotIndex: number
+  attachmentName: string | null
+  color: ColorTuple
+  darkColor: ColorTuple | null
+  deform: number[]
+}
+
+interface VisualStateSnapshot {
+  id: string
+  animationName: string
+  time: number
+  slots: SlotVisualSnapshot[]
+  drawOrder?: number[]
+}
+
+interface VisualStateGroupProfile {
+  metadata: SpineStateGroup
+  slotIndexes: ReadonlySet<number>
+  affectsDrawOrder: boolean
+}
+
+interface VisualStateProfile {
+  groups: VisualStateGroupProfile[]
+  snapshots: ReadonlyMap<string, VisualStateSnapshot>
+}
 
 interface CharacterVariantProfile {
   animationGroups: ReadonlyMap<string, CharacterVariantGroup>
@@ -115,6 +158,15 @@ function animationBoneIndexes(animation: Spine['spineData']['animations'][number
     if (index !== undefined) indexes.add(index)
   }
   return indexes
+}
+
+function hasMotionTimeline(animation: Spine['spineData']['animations'][number]) {
+  return animation.timelines.some((timeline) => {
+    return 'boneIndex' in timeline
+      || 'ikConstraintIndex' in timeline
+      || 'transformConstraintIndex' in timeline
+      || 'pathConstraintIndex' in timeline
+  })
 }
 
 function isOverlayAnimation(spine: Spine, animationName: string) {
@@ -175,81 +227,239 @@ function arraysMatch(left: ArrayLike<number>, right: ArrayLike<number>) {
 function createPoseSkeleton(spine: Spine) {
   const skeleton = new Skeleton(spine.spineData)
   if (spine.skeleton.skin) skeleton.setSkin(spine.skeleton.skin)
-  skeleton.setSlotsToSetupPose()
+  skeleton.setToSetupPose()
   return skeleton
 }
 
-function isPersistentStateAnimation(spine: Spine, animation: Spine['spineData']['animations'][number]) {
-  const hasMotionTimeline = animation.timelines.some((timeline) => {
-    return 'boneIndex' in timeline
-      || 'ikConstraintIndex' in timeline
-      || 'transformConstraintIndex' in timeline
-      || 'pathConstraintIndex' in timeline
+function colorTuple(color: { r: number; g: number; b: number; a: number }): ColorTuple {
+  return [color.r, color.g, color.b, color.a]
+}
+
+function captureVisualSnapshot(
+  spine: Spine,
+  animation: Spine['spineData']['animations'][number] | undefined,
+  time: number,
+  slotIndexes: ReadonlySet<number>,
+  affectsDrawOrder: boolean,
+): VisualStateSnapshot {
+  const skeleton = createPoseSkeleton(spine)
+  if (animation) {
+    animation.apply(skeleton, -1, time, false, [], 1, MixBlend.setup, MixDirection.mixIn)
+  }
+  return {
+    id: '',
+    animationName: animation?.name ?? '',
+    time,
+    slots: [...slotIndexes].sort((left, right) => left - right).map((slotIndex) => {
+      const slot = skeleton.slots[slotIndex]
+      return {
+        slotIndex,
+        attachmentName: slot.getAttachment()?.name ?? null,
+        color: colorTuple(slot.color),
+        darkColor: slot.darkColor ? colorTuple(slot.darkColor) : null,
+        deform: Array.from(slot.deform),
+      }
+    }),
+    drawOrder: affectsDrawOrder ? skeleton.drawOrder.map((slot) => slot.data.index) : undefined,
+  }
+}
+
+function deformFingerprint(values: ReadonlyArray<number>) {
+  let hash = 2166136261
+  for (const value of values) {
+    hash ^= Math.round(value * 1000)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `${values.length}:${hash >>> 0}`
+}
+
+function visualSnapshotSignature(snapshot: VisualStateSnapshot) {
+  const slots = snapshot.slots.map((slot) => {
+    const color = slot.color.map((value) => Math.round(value * 255)).join('.')
+    const dark = slot.darkColor?.map((value) => Math.round(value * 255)).join('.') ?? '-'
+    return `${slot.slotIndex}:${slot.attachmentName ?? '-'}:${color}:${dark}:${deformFingerprint(slot.deform)}`
   })
-  if (hasMotionTimeline) return false
-
-  const setup = createPoseSkeleton(spine)
-  const posed = createPoseSkeleton(spine)
-  animation.apply(
-    posed,
-    -1,
-    animation.duration + 0.0001,
-    false,
-    [],
-    1,
-    MixBlend.setup,
-    MixDirection.mixIn,
-  )
-
-  const slotChanged = posed.slots.some((slot, index) => {
-    const setupSlot = setup.slots[index]
-    return slot.getAttachment() !== setupSlot.getAttachment()
-      || !colorsMatch(slot.color, setupSlot.color)
-      || !colorsMatch(slot.darkColor, setupSlot.darkColor)
-      || !arraysMatch(slot.deform, setupSlot.deform)
-  })
-  if (slotChanged) return true
-
-  return posed.drawOrder.some((slot, index) => slot.data.index !== setup.drawOrder[index].data.index)
+  return `${slots.join('|')}#${snapshot.drawOrder?.join('.') ?? '-'}`
 }
 
-function collectPersistentStateAnimations(spine: Spine) {
-  return spine.spineData.animations
-    .filter((animation) => isPersistentStateAnimation(spine, animation))
-    .map((animation) => animation.name)
+function visualSnapshotDistance(base: VisualStateSnapshot, candidate: VisualStateSnapshot) {
+  let score = 0
+  for (let index = 0; index < candidate.slots.length; index += 1) {
+    const left = base.slots[index]
+    const right = candidate.slots[index]
+    if (left.attachmentName !== right.attachmentName) score += 4
+    if ((left.color[3] > 0.05) !== (right.color[3] > 0.05)) score += 4
+    if (!arraysMatch(left.color, right.color)) score += 1
+    if (!colorsMatch(
+      left.darkColor && { r: left.darkColor[0], g: left.darkColor[1], b: left.darkColor[2], a: left.darkColor[3] },
+      right.darkColor && { r: right.darkColor[0], g: right.darkColor[1], b: right.darkColor[2], a: right.darkColor[3] },
+    )) score += 1
+    if (!arraysMatch(left.deform, right.deform)) score += 3
+  }
+  if (base.drawOrder && candidate.drawOrder && !arraysMatch(base.drawOrder, candidate.drawOrder)) score += 4
+  return score
 }
 
-function stateTrackIndex(spine: Spine, animationName: string) {
-  const index = spine.spineData.animations.findIndex((animation) => animation.name === animationName)
-  return index < 0 ? undefined : index + STATE_TRACK_OFFSET
+function visibleAffectedSlots(snapshot: VisualStateSnapshot) {
+  return snapshot.slots.filter((slot) => slot.attachmentName && slot.color[3] > 0.05).length
 }
 
-function restoreTrackedPose(spine: Spine) {
-  spine.skeleton.setToSetupPose()
-  spine.state.apply(spine.skeleton)
+function representativeStateColor(base: VisualStateSnapshot, candidate: VisualStateSnapshot) {
+  let selected: ColorTuple | undefined
+  let selectedDistance = 0
+  for (let index = 0; index < candidate.slots.length; index += 1) {
+    const left = base.slots[index].color
+    const right = candidate.slots[index].color
+    if (right[3] <= 0.2 || left[3] <= 0.2) continue
+    const distance = Math.hypot(right[0] - left[0], right[1] - left[1], right[2] - left[2])
+    if (distance <= selectedDistance || distance < 0.08) continue
+    selected = right
+    selectedDistance = distance
+  }
+  if (!selected) return undefined
+  return `#${selected.slice(0, 3).map((value) => Math.round(value * 255).toString(16).padStart(2, '0')).join('')}`
+}
+
+function visualTimelineTimes(timeline: unknown) {
+  let stride = 0
+  if (timeline instanceof ColorTimeline) stride = ColorTimeline.ENTRIES
+  else if (timeline instanceof TwoColorTimeline) stride = TwoColorTimeline.ENTRIES
+  else if (timeline instanceof AttachmentTimeline || timeline instanceof DeformTimeline || timeline instanceof DrawOrderTimeline) stride = 1
+  if (!stride) return []
+  const frames = Reflect.get(timeline as object, 'frames') as ArrayLike<number>
+  const times: number[] = []
+  for (let index = 0; index < frames.length; index += stride) times.push(frames[index])
+  return times
+}
+
+function collectVisualStateProfile(spine: Spine): VisualStateProfile {
+  const snapshots = new Map<string, VisualStateSnapshot>()
+  const groups: VisualStateGroupProfile[] = []
+
+  for (const animation of spine.spineData.animations) {
+    if (animation === idleAnimation(spine)) continue
+    const slotIndexes = new Set<number>()
+    const keyTimes = new Set<number>([0, animation.duration])
+    let affectsDrawOrder = false
+    for (const timeline of animation.timelines) {
+      const slotIndex = timelineSlotIndex(timeline)
+      if (slotIndex !== undefined) slotIndexes.add(slotIndex)
+      if (timeline instanceof DrawOrderTimeline) affectsDrawOrder = true
+      for (const time of visualTimelineTimes(timeline)) keyTimes.add(time)
+    }
+    if (slotIndexes.size < 2 && !affectsDrawOrder) continue
+
+    // A reusable visual state may swap attachments, tint slots, change mesh
+    // deformation, or reorder slots. Bone/constraint timelines are motion
+    // clips, even when they happen to hold a pose for part of their duration.
+    // Persisting those clips creates duplicate limbs and frozen characters.
+    if (hasMotionTimeline(animation)) continue
+
+    const setup = captureVisualSnapshot(spine, undefined, 0, slotIndexes, affectsDrawOrder)
+    const base = captureVisualSnapshot(spine, animation, 0, slotIndexes, affectsDrawOrder)
+    const setupSignature = visualSnapshotSignature(setup)
+    const baseSignature = visualSnapshotSignature(base)
+    const boundaries = [...keyTimes]
+      .filter((time) => Number.isFinite(time) && time >= 0 && time <= animation.duration)
+      .sort((left, right) => left - right)
+      .filter((time, index, values) => index === 0 || Math.abs(time - values[index - 1]) > 0.0001)
+    const candidates = new Map<string, { snapshot: VisualStateSnapshot; stableDuration: number; score: number }>()
+
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const start = boundaries[index]
+      const end = boundaries[index + 1]
+      const stableDuration = end - start
+      if (stableDuration < STATE_MIN_STABLE_DURATION) continue
+      const inset = Math.min(0.002, stableDuration * 0.1)
+      const left = captureVisualSnapshot(spine, animation, start + inset, slotIndexes, affectsDrawOrder)
+      const right = captureVisualSnapshot(spine, animation, end - inset, slotIndexes, affectsDrawOrder)
+      if (visualSnapshotSignature(left) !== visualSnapshotSignature(right)) continue
+      const signature = visualSnapshotSignature(left)
+      if (signature === baseSignature || signature === setupSignature) continue
+      const score = visualSnapshotDistance(base, left)
+      const existing = candidates.get(signature)
+      if (!existing || stableDuration > existing.stableDuration) {
+        left.time = (start + end) / 2
+        candidates.set(signature, { snapshot: left, stableDuration, score })
+      }
+    }
+
+    let ranked = [...candidates.values()]
+    const baselineVisible = visibleAffectedSlots(base)
+    ranked = ranked.filter(({ snapshot }) => {
+      if (!slotIndexes.size) return true
+      const minimumVisible = baselineVisible ? Math.max(1, Math.floor(baselineVisible * 0.25)) : 1
+      return visibleAffectedSlots(snapshot) >= minimumVisible
+    })
+    const maximumScore = Math.max(0, ...ranked.map((candidate) => candidate.score))
+    ranked = ranked.filter((candidate) => candidate.score >= Math.max(1, maximumScore * 0.25))
+
+    if (!ranked.length) {
+      const score = visualSnapshotDistance(setup, base)
+      if (score > 0) ranked = [{ snapshot: base, stableDuration: animation.duration, score }]
+    }
+    if (!ranked.length) continue
+
+    ranked = ranked
+      .sort((left, right) => right.score - left.score || right.stableDuration - left.stableDuration)
+      .slice(0, STATE_MAX_OPTIONS)
+      .sort((left, right) => left.snapshot.time - right.snapshot.time)
+    const groupId = animation.name
+    const options = ranked.map(({ snapshot }, index) => {
+      const id = `${groupId}~${index + 1}`
+      snapshot.id = id
+      snapshot.animationName = animation.name
+      snapshots.set(id, snapshot)
+      return {
+        id,
+        label: `状态 ${index + 1}`,
+        time: snapshot.time,
+        previewColor: representativeStateColor(setup, snapshot),
+      }
+    })
+    groups.push({
+      metadata: { id: groupId, label: animation.name, affectedSlots: slotIndexes.size, conflicts: [], options },
+      slotIndexes,
+      affectsDrawOrder,
+    })
+  }
+
+  for (const group of groups) {
+    group.metadata.conflicts = groups
+      .filter((candidate) => candidate !== group && (
+        (group.affectsDrawOrder && candidate.affectsDrawOrder)
+        || [...group.slotIndexes].some((index) => candidate.slotIndexes.has(index))
+      ))
+      .map((candidate) => candidate.metadata.id)
+  }
+  return { groups, snapshots }
+}
+
+function applyVisualStates(
+  spine: Spine,
+  requested: ReadonlySet<string>,
+  snapshots: ReadonlyMap<string, VisualStateSnapshot>,
+) {
+  for (const id of requested) {
+    const snapshot = snapshots.get(id)
+    if (!snapshot) continue
+    for (const visual of snapshot.slots) {
+      const slot = spine.skeleton.slots[visual.slotIndex]
+      const attachment = visual.attachmentName
+        ? spine.skeleton.getAttachment(visual.slotIndex, visual.attachmentName)
+        : null
+      slot.setAttachment(attachment!)
+      slot.color.set(...visual.color)
+      if (slot.darkColor && visual.darkColor) slot.darkColor.set(...visual.darkColor)
+      slot.deform.length = 0
+      slot.deform.push(...visual.deform)
+    }
+    if (snapshot.drawOrder) {
+      spine.skeleton.drawOrder.length = 0
+      for (const slotIndex of snapshot.drawOrder) spine.skeleton.drawOrder.push(spine.skeleton.slots[slotIndex])
+    }
+  }
   spine.skeleton.updateWorldTransform()
-}
-
-function syncPersistentAnimations(spine: Spine, requested: ReadonlySet<string>, active: Set<string>) {
-  let removed = false
-  for (const name of [...active]) {
-    if (requested.has(name)) continue
-    const trackIndex = stateTrackIndex(spine, name)
-    if (trackIndex !== undefined) spine.state.clearTrack(trackIndex)
-    active.delete(name)
-    removed = true
-  }
-
-  for (const name of requested) {
-    if (active.has(name)) continue
-    const trackIndex = stateTrackIndex(spine, name)
-    if (trackIndex === undefined) continue
-    spine.state.setAnimation(trackIndex, name, false)
-    active.add(name)
-  }
-
-  if (removed) restoreTrackedPose(spine)
-  spine.update(0)
 }
 
 function isRenderableAttachment(type: AttachmentType) {
@@ -538,14 +748,23 @@ function applyLayerVisibility(
   }
 }
 
-function lockLayerVisibility(
+function lockPostUpdate(
   instance: SpineInstance,
   hiddenLayerIdsRef: React.RefObject<ReadonlySet<string>>,
   automaticHiddenSlotIndexesRef: React.RefObject<ReadonlySet<number>>,
+  requestedVisualStatesRef: React.RefObject<ReadonlySet<string>>,
+  visualStateProfileRef: React.RefObject<VisualStateProfile | undefined>,
 ) {
   const originalUpdate = instance.spine.update.bind(instance.spine)
   instance.spine.update = (delta: number) => {
     originalUpdate(delta)
+    if (instance.kind === 'main' && visualStateProfileRef.current) {
+      applyVisualStates(
+        instance.spine,
+        requestedVisualStatesRef.current,
+        visualStateProfileRef.current.snapshots,
+      )
+    }
     applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
   }
 }
@@ -590,8 +809,8 @@ export function SpineStage({
   const spineLayersRef = useRef<Spine[]>([])
   const spineInstancesRef = useRef<SpineInstance[]>([])
   const playbackTrackIndexRef = useRef(0)
-  const activeStateAnimationsRef = useRef<Set<string>>(new Set())
-  const requestedStateAnimationsRef = useRef<ReadonlySet<string>>(new Set(persistentAnimations))
+  const requestedVisualStatesRef = useRef<ReadonlySet<string>>(new Set(persistentAnimations))
+  const visualStateProfileRef = useRef<VisualStateProfile | undefined>(undefined)
   const hiddenLayerIdsRef = useRef<ReadonlySet<string>>(new Set(hiddenLayerIds))
   const characterVariantProfileRef = useRef<CharacterVariantProfile | undefined>(undefined)
   const activeCharacterGroupRef = useRef<CharacterVariantGroup | undefined>(undefined)
@@ -605,7 +824,7 @@ export function SpineStage({
   const [rendererReady, setRendererReady] = useState(false)
   const effectKey = effects.map((effect) => `${effect.layer}:${effect.asset.id}`).join('|')
   const persistentAnimationKey = persistentAnimations.join('|')
-  requestedStateAnimationsRef.current = new Set(persistentAnimations)
+  requestedVisualStatesRef.current = new Set(persistentAnimations)
 
   const updateAutomaticCharacterVisibility = (requestedAnimation: string) => {
     const profile = characterVariantProfileRef.current
@@ -645,7 +864,7 @@ export function SpineStage({
     spineLayersRef.current = []
     spineInstancesRef.current = []
     playbackTrackIndexRef.current = 0
-    activeStateAnimationsRef.current.clear()
+    visualStateProfileRef.current = undefined
     characterVariantProfileRef.current = undefined
     activeCharacterGroupRef.current = undefined
     automaticHiddenSlotIndexesRef.current = new Set()
@@ -761,7 +980,13 @@ export function SpineStage({
           }
           const identity = layerIdentity(layer)
           const instance: SpineInstance = { ...identity, spine }
-          lockLayerVisibility(instance, hiddenLayerIdsRef, automaticHiddenSlotIndexesRef)
+          lockPostUpdate(
+            instance,
+            hiddenLayerIdsRef,
+            automaticHiddenSlotIndexesRef,
+            requestedVisualStatesRef,
+            visualStateProfileRef,
+          )
           const playback = applyAnimation(spine, animation, loop)
           applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
           spine.state.timeScale = paused ? 0 : speed
@@ -774,12 +999,13 @@ export function SpineStage({
         }
 
         if (!mainSpine) throw new Error('角色主骨架未能加载')
+        visualStateProfileRef.current = collectVisualStateProfile(mainSpine)
         characterVariantProfileRef.current = detectCharacterVariants
           ? collectCharacterVariantProfile(mainSpine)
           : undefined
         activeCharacterGroupRef.current = undefined
         updateAutomaticCharacterVisibility(preferredAnimation(mainSpine, animation))
-        syncPersistentAnimations(mainSpine, requestedStateAnimationsRef.current, activeStateAnimationsRef.current)
+        mainSpine.update(0)
         for (const instance of spineInstances) {
           applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
         }
@@ -796,9 +1022,11 @@ export function SpineStage({
 
         const animations = mainSpine.spineData.animations.map((item) => item.name)
         const skins = mainSpine.spineData.skins.map((item) => item.name)
+        const stateGroups = visualStateProfileRef.current.groups.map((group) => group.metadata)
         onMetadata({
           animations,
-          stateAnimations: collectPersistentStateAnimations(mainSpine),
+          stateAnimations: stateGroups.map((group) => group.id),
+          stateGroups,
           overlayAnimations: collectOverlayAnimations(mainSpine),
           variantGroups: [...(characterVariantProfileRef.current?.slotIndexes.keys() ?? [])]
             .sort((left, right) => left.localeCompare(right)),
@@ -858,7 +1086,11 @@ export function SpineStage({
   useEffect(() => {
     const mainSpine = spineRef.current
     if (!mainSpine) return
-    syncPersistentAnimations(mainSpine, new Set(persistentAnimations), activeStateAnimationsRef.current)
+    // Clearing a snapshot must restore slots that the currently playing
+    // animation does not key. Otherwise the previous attachment, tint, mesh
+    // deformation, or draw order can remain visible after selecting Default.
+    mainSpine.skeleton.setSlotsToSetupPose()
+    mainSpine.update(0)
     for (const instance of spineInstancesRef.current) {
       applyLayerVisibility(instance, hiddenLayerIdsRef.current, automaticHiddenSlotIndexesRef.current)
     }
