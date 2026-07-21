@@ -256,6 +256,15 @@ if (remoteMode) {
   revision = gitRevision()
 }
 
+// Keep local filesystem walks and GitHub's case-sensitive tree order from
+// producing noisy manifest diffs for the same upstream revision.
+files.sort((left, right) => {
+  const a = left.path.toLowerCase()
+  const b = right.path.toLowerCase()
+  if (a !== b) return a < b ? -1 : 1
+  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+})
+
 const groups = new Map()
 for (const file of files) {
   const folder = file.path.slice(0, file.path.lastIndexOf('/'))
