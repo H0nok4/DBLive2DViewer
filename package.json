@@ -10,6 +10,7 @@
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
     "assets:sync": "node scripts/sync-assets.mjs",
+    "assets:audit-states": "node scripts/audit-state-animations.mjs",
     "generate:manifest": "node scripts/generate-manifest.mjs",
     "generate:manifest:remote": "node scripts/generate-manifest.mjs --remote"
   },

@@ -81,6 +81,16 @@ npm run generate:manifest:remote
 
 Both modes rewrite `src/data/assets.generated.json`, grouping Break models as character skins and matching Effect models with their main variant. Remote mode leaves the file untouched when its saved upstream revision is already current; add `-- --force` to regenerate it anyway.
 
+## Audit visual state animations
+
+After synchronizing the local assets, scan every main Spine model for animations that only change slots, attachments, deformation, or draw order:
+
+```bash
+npm run assets:audit-states
+```
+
+Add `-- --all` to print every candidate, or `-- --json` for machine-readable output. The audit also checks the Melody `click10a`, Ushuaia `click1`, and Ccc `click6` regression references.
+
 ## Automatic upstream synchronization
 
 The [`Sync upstream assets`](.github/workflows/sync-upstream-assets.yml) workflow checks DaiblosCoreAssets every six hours and can also be started manually from the Actions tab.

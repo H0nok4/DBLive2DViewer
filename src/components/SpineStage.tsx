@@ -74,17 +74,34 @@ type CharacterVariantGroup = string
 
 const OVERLAY_TRACK_INDEX = 1
 const OVERLAY_BONE_COVERAGE = 0.35
-const STATE_MIN_STABLE_DURATION = 0.1
+const STATE_MIN_STABLE_DURATION = 1 / 30
+const STATE_MIN_STABLE_COVERAGE = 0.8
+const STATE_RESET_TAIL_START = 0.75
+const STATE_RESET_SCORE_RATIO = 0.75
 const STATE_MAX_OPTIONS = 6
 
 type ColorTuple = [number, number, number, number]
 
-interface SlotVisualSnapshot {
+interface SlotVisualFrame {
   slotIndex: number
   attachmentName: string | null
   color: ColorTuple
   darkColor: ColorTuple | null
   deform: number[]
+}
+
+interface VisualFrame {
+  slots: SlotVisualFrame[]
+  drawOrder?: number[]
+  visibleSlots: number
+}
+
+interface SlotVisualSnapshot {
+  slotIndex: number
+  attachmentName?: string | null
+  color?: ColorTuple
+  darkColor?: ColorTuple | null
+  deform?: number[]
 }
 
 interface VisualStateSnapshot {
@@ -207,23 +224,20 @@ function applyAnimation(spine: Spine, requested: string, loop: boolean) {
   return { name: next, trackIndex }
 }
 
-function colorsMatch(
-  left: { r: number; g: number; b: number; a: number } | null | undefined,
-  right: { r: number; g: number; b: number; a: number } | null | undefined,
-) {
-  if (!left || !right) return left === right
-  return Math.abs(left.r - right.r) < 0.0001
-    && Math.abs(left.g - right.g) < 0.0001
-    && Math.abs(left.b - right.b) < 0.0001
-    && Math.abs(left.a - right.a) < 0.0001
-}
-
 function arraysMatch(left: ArrayLike<number>, right: ArrayLike<number>) {
   if (left.length !== right.length) return false
   for (let index = 0; index < left.length; index += 1) {
     if (Math.abs(left[index] - right[index]) >= 0.0001) return false
   }
   return true
+}
+
+function nullableArraysMatch(
+  left: ArrayLike<number> | null | undefined,
+  right: ArrayLike<number> | null | undefined,
+) {
+  if (!left || !right) return left === right
+  return arraysMatch(left, right)
 }
 
 function createPoseSkeleton(spine: Spine) {
@@ -243,15 +257,12 @@ function captureVisualSnapshot(
   time: number,
   slotIndexes: ReadonlySet<number>,
   affectsDrawOrder: boolean,
-): VisualStateSnapshot {
+): VisualFrame {
   const skeleton = createPoseSkeleton(spine)
   if (animation) {
     animation.apply(skeleton, -1, time, false, [], 1, MixBlend.setup, MixDirection.mixIn)
   }
   return {
-    id: '',
-    animationName: animation?.name ?? '',
-    time,
     slots: [...slotIndexes].sort((left, right) => left - right).map((slotIndex) => {
       const slot = skeleton.slots[slotIndex]
       return {
@@ -263,6 +274,7 @@ function captureVisualSnapshot(
       }
     }),
     drawOrder: affectsDrawOrder ? skeleton.drawOrder.map((slot) => slot.data.index) : undefined,
+    visibleSlots: skeleton.slots.filter((slot) => slot.getAttachment() && slot.color.a > 0.05).length,
   }
 }
 
@@ -277,41 +289,131 @@ function deformFingerprint(values: ReadonlyArray<number>) {
 
 function visualSnapshotSignature(snapshot: VisualStateSnapshot) {
   const slots = snapshot.slots.map((slot) => {
-    const color = slot.color.map((value) => Math.round(value * 255)).join('.')
-    const dark = slot.darkColor?.map((value) => Math.round(value * 255)).join('.') ?? '-'
-    return `${slot.slotIndex}:${slot.attachmentName ?? '-'}:${color}:${dark}:${deformFingerprint(slot.deform)}`
+    const attachment = Object.hasOwn(slot, 'attachmentName') ? slot.attachmentName ?? 'null' : '-'
+    const color = slot.color?.map((value) => Math.round(value * 255)).join('.') ?? '-'
+    const dark = Object.hasOwn(slot, 'darkColor')
+      ? slot.darkColor?.map((value) => Math.round(value * 255)).join('.') ?? 'null'
+      : '-'
+    const deform = slot.deform ? deformFingerprint(slot.deform) : '-'
+    return `${slot.slotIndex}:${attachment}:${color}:${dark}:${deform}`
   })
   return `${slots.join('|')}#${snapshot.drawOrder?.join('.') ?? '-'}`
 }
 
-function visualSnapshotDistance(base: VisualStateSnapshot, candidate: VisualStateSnapshot) {
-  let score = 0
-  for (let index = 0; index < candidate.slots.length; index += 1) {
-    const left = base.slots[index]
-    const right = candidate.slots[index]
-    if (left.attachmentName !== right.attachmentName) score += 4
-    if ((left.color[3] > 0.05) !== (right.color[3] > 0.05)) score += 4
-    if (!arraysMatch(left.color, right.color)) score += 1
-    if (!colorsMatch(
-      left.darkColor && { r: left.darkColor[0], g: left.darkColor[1], b: left.darkColor[2], a: left.darkColor[3] },
-      right.darkColor && { r: right.darkColor[0], g: right.darkColor[1], b: right.darkColor[2], a: right.darkColor[3] },
-    )) score += 1
-    if (!arraysMatch(left.deform, right.deform)) score += 3
+function visualSnapshotAtoms(snapshot: VisualStateSnapshot) {
+  const atoms = new Set<string>()
+  for (const slot of snapshot.slots) {
+    if (Object.hasOwn(slot, 'attachmentName')) {
+      atoms.add(`${slot.slotIndex}:attachment:${slot.attachmentName ?? 'null'}`)
+    }
+    if (slot.color) {
+      atoms.add(`${slot.slotIndex}:color:${slot.color.map((value) => Math.round(value * 255)).join('.')}`)
+    }
+    if (Object.hasOwn(slot, 'darkColor')) {
+      atoms.add(`${slot.slotIndex}:dark:${slot.darkColor?.map((value) => Math.round(value * 255)).join('.') ?? 'null'}`)
+    }
+    if (slot.deform) atoms.add(`${slot.slotIndex}:deform:${deformFingerprint(slot.deform)}`)
   }
-  if (base.drawOrder && candidate.drawOrder && !arraysMatch(base.drawOrder, candidate.drawOrder)) score += 4
+  if (snapshot.drawOrder) atoms.add(`drawOrder:${snapshot.drawOrder.join('.')}`)
+  return atoms
+}
+
+function isProperVisualSubset(left: ReadonlySet<string>, right: ReadonlySet<string>) {
+  if (left.size >= right.size) return false
+  for (const atom of left) {
+    if (!right.has(atom)) return false
+  }
+  return true
+}
+
+function createVisualStateSnapshot(
+  setup: VisualFrame,
+  left: VisualFrame,
+  candidate: VisualFrame,
+  right: VisualFrame,
+  animationName: string,
+  time: number,
+): VisualStateSnapshot {
+  const slots: SlotVisualSnapshot[] = []
+  for (let index = 0; index < candidate.slots.length; index += 1) {
+    const base = setup.slots[index]
+    const before = left.slots[index]
+    const current = candidate.slots[index]
+    const after = right.slots[index]
+    const patch: SlotVisualSnapshot = { slotIndex: current.slotIndex }
+
+    if (
+      before.attachmentName === current.attachmentName
+      && current.attachmentName === after.attachmentName
+      && base.attachmentName !== current.attachmentName
+    ) {
+      patch.attachmentName = current.attachmentName
+    }
+    if (
+      arraysMatch(before.color, current.color)
+      && arraysMatch(current.color, after.color)
+      && !arraysMatch(base.color, current.color)
+    ) {
+      patch.color = current.color
+    }
+    if (
+      nullableArraysMatch(before.darkColor, current.darkColor)
+      && nullableArraysMatch(current.darkColor, after.darkColor)
+      && !nullableArraysMatch(base.darkColor, current.darkColor)
+    ) {
+      patch.darkColor = current.darkColor
+    }
+    if (
+      arraysMatch(before.deform, current.deform)
+      && arraysMatch(current.deform, after.deform)
+      && !arraysMatch(base.deform, current.deform)
+    ) {
+      patch.deform = current.deform
+    }
+    if (Object.keys(patch).length > 1) slots.push(patch)
+  }
+
+  const stableDrawOrder = setup.drawOrder
+    && left.drawOrder
+    && candidate.drawOrder
+    && right.drawOrder
+    && arraysMatch(left.drawOrder, candidate.drawOrder)
+    && arraysMatch(candidate.drawOrder, right.drawOrder)
+    && !arraysMatch(setup.drawOrder, candidate.drawOrder)
+
+  return {
+    id: '',
+    animationName,
+    time,
+    slots,
+    drawOrder: stableDrawOrder ? candidate.drawOrder : undefined,
+  }
+}
+
+function visualSnapshotDistance(base: VisualFrame, candidate: VisualStateSnapshot) {
+  const baseSlots = new Map(base.slots.map((slot) => [slot.slotIndex, slot]))
+  let score = 0
+  for (const slot of candidate.slots) {
+    const setup = baseSlots.get(slot.slotIndex)
+    if (Object.hasOwn(slot, 'attachmentName')) score += 5
+    if (slot.color) {
+      score += setup && (setup.color[3] > 0.05) !== (slot.color[3] > 0.05) ? 5 : 1
+    }
+    if (Object.hasOwn(slot, 'darkColor')) score += 1
+    if (slot.deform) score += 3
+  }
+  if (candidate.drawOrder) score += 5
   return score
 }
 
-function visibleAffectedSlots(snapshot: VisualStateSnapshot) {
-  return snapshot.slots.filter((slot) => slot.attachmentName && slot.color[3] > 0.05).length
-}
-
-function representativeStateColor(base: VisualStateSnapshot, candidate: VisualStateSnapshot) {
+function representativeStateColor(base: VisualFrame, candidate: VisualStateSnapshot) {
   let selected: ColorTuple | undefined
   let selectedDistance = 0
-  for (let index = 0; index < candidate.slots.length; index += 1) {
-    const left = base.slots[index].color
-    const right = candidate.slots[index].color
+  const baseSlots = new Map(base.slots.map((slot) => [slot.slotIndex, slot]))
+  for (const slot of candidate.slots) {
+    const left = baseSlots.get(slot.slotIndex)?.color
+    const right = slot.color
+    if (!left || !right) continue
     if (right[3] <= 0.2 || left[3] <= 0.2) continue
     const distance = Math.hypot(right[0] - left[0], right[1] - left[1], right[2] - left[2])
     if (distance <= selectedDistance || distance < 0.08) continue
@@ -358,54 +460,131 @@ function collectVisualStateProfile(spine: Spine): VisualStateProfile {
     if (hasMotionTimeline(animation)) continue
 
     const setup = captureVisualSnapshot(spine, undefined, 0, slotIndexes, affectsDrawOrder)
-    const base = captureVisualSnapshot(spine, animation, 0, slotIndexes, affectsDrawOrder)
-    const setupSignature = visualSnapshotSignature(setup)
-    const baseSignature = visualSnapshotSignature(base)
+    const initialFrame = captureVisualSnapshot(spine, animation, 0, slotIndexes, affectsDrawOrder)
+    const initialSnapshot = createVisualStateSnapshot(
+      setup,
+      initialFrame,
+      initialFrame,
+      initialFrame,
+      animation.name,
+      0,
+    )
+    const initialSignature = visualSnapshotSignature(initialSnapshot)
     const boundaries = [...keyTimes]
       .filter((time) => Number.isFinite(time) && time >= 0 && time <= animation.duration)
       .sort((left, right) => left - right)
       .filter((time, index, values) => index === 0 || Math.abs(time - values[index - 1]) > 0.0001)
-    const candidates = new Map<string, { snapshot: VisualStateSnapshot; stableDuration: number; score: number }>()
+    const candidates = new Map<string, {
+      snapshot: VisualStateSnapshot
+      frame: VisualFrame
+      stableDuration: number
+      score: number
+      coverage: number
+    }>()
 
     for (let index = 0; index < boundaries.length - 1; index += 1) {
       const start = boundaries[index]
       const end = boundaries[index + 1]
       const stableDuration = end - start
       if (stableDuration < STATE_MIN_STABLE_DURATION) continue
-      const inset = Math.min(0.002, stableDuration * 0.1)
+      const inset = Math.min(0.001, stableDuration * 0.1)
       const left = captureVisualSnapshot(spine, animation, start + inset, slotIndexes, affectsDrawOrder)
+      const middleTime = (start + end) / 2
+      const middle = captureVisualSnapshot(spine, animation, middleTime, slotIndexes, affectsDrawOrder)
       const right = captureVisualSnapshot(spine, animation, end - inset, slotIndexes, affectsDrawOrder)
-      if (visualSnapshotSignature(left) !== visualSnapshotSignature(right)) continue
-      const signature = visualSnapshotSignature(left)
-      if (signature === baseSignature || signature === setupSignature) continue
-      const score = visualSnapshotDistance(base, left)
+      const snapshot = createVisualStateSnapshot(
+        setup,
+        left,
+        middle,
+        right,
+        animation.name,
+        middleTime,
+      )
+      if (!snapshot.slots.length && !snapshot.drawOrder) continue
+      const signature = visualSnapshotSignature(snapshot)
+      if (signature === initialSignature) continue
+      const score = visualSnapshotDistance(setup, snapshot)
+      const completeSnapshot = createVisualStateSnapshot(
+        setup,
+        middle,
+        middle,
+        middle,
+        animation.name,
+        middleTime,
+      )
+      if (visualSnapshotSignature(completeSnapshot) === initialSignature) continue
+      const completeScore = visualSnapshotDistance(setup, completeSnapshot)
+      const coverage = completeScore > 0 ? score / completeScore : 0
+      if (coverage < STATE_MIN_STABLE_COVERAGE) continue
       const existing = candidates.get(signature)
       if (!existing || stableDuration > existing.stableDuration) {
-        left.time = (start + end) / 2
-        candidates.set(signature, { snapshot: left, stableDuration, score })
+        candidates.set(signature, { snapshot, frame: middle, stableDuration, score, coverage })
       }
     }
 
     let ranked = [...candidates.values()]
-    const baselineVisible = visibleAffectedSlots(base)
-    ranked = ranked.filter(({ snapshot }) => {
-      if (!slotIndexes.size) return true
+    const baselineVisible = setup.visibleSlots
+    ranked = ranked.filter(({ frame }) => {
       const minimumVisible = baselineVisible ? Math.max(1, Math.floor(baselineVisible * 0.25)) : 1
-      return visibleAffectedSlots(snapshot) >= minimumVisible
+      return frame.visibleSlots >= minimumVisible
     })
+    const longestStableDuration = Math.max(0, ...ranked.map((candidate) => candidate.stableDuration))
+    if (longestStableDuration > 0) {
+      const preferredDuration = Math.max(STATE_MIN_STABLE_DURATION, longestStableDuration * 0.75)
+      ranked = ranked.filter((candidate) => candidate.stableDuration >= preferredDuration)
+    }
+    const strongestCandidate = ranked.reduce<typeof ranked[number] | undefined>(
+      (strongest, candidate) => !strongest || candidate.score > strongest.score ? candidate : strongest,
+      undefined,
+    )
+    if (strongestCandidate) {
+      ranked = ranked.filter((candidate) => !(
+        candidate.snapshot.time > strongestCandidate.snapshot.time
+        && candidate.snapshot.time >= animation.duration * STATE_RESET_TAIL_START
+        && candidate.score < strongestCandidate.score * STATE_RESET_SCORE_RATIO
+      ))
+    }
+    const atomSets = new Map(ranked.map((candidate) => [candidate, visualSnapshotAtoms(candidate.snapshot)]))
+    ranked = ranked.filter((candidate) => !ranked.some((other) => (
+      other !== candidate
+      && other.score >= candidate.score
+      && isProperVisualSubset(atomSets.get(candidate)!, atomSets.get(other)!)
+    )))
     const maximumScore = Math.max(0, ...ranked.map((candidate) => candidate.score))
     ranked = ranked.filter((candidate) => candidate.score >= Math.max(1, maximumScore * 0.25))
 
     if (!ranked.length) {
-      const score = visualSnapshotDistance(setup, base)
-      if (score > 0) ranked = [{ snapshot: base, stableDuration: animation.duration, score }]
+      const fallback = [...boundaries]
+        .map((time) => {
+          const frame = captureVisualSnapshot(spine, animation, time, slotIndexes, affectsDrawOrder)
+          const snapshot = createVisualStateSnapshot(
+            setup,
+            frame,
+            frame,
+            frame,
+            animation.name,
+            time,
+          )
+          return {
+            snapshot,
+            frame,
+            stableDuration: 0,
+            score: visualSnapshotDistance(setup, snapshot),
+            coverage: 1,
+          }
+        })
+        .filter((candidate) => candidate.score > 0)
+        .sort((left, right) => right.score - left.score)[0]
+      if (fallback) ranked = [fallback]
     }
     if (!ranked.length) continue
 
     ranked = ranked
-      .sort((left, right) => right.score - left.score || right.stableDuration - left.stableDuration)
+      .sort((left, right) => right.score - left.score
+        || right.coverage - left.coverage
+        || right.stableDuration - left.stableDuration
+        || left.snapshot.time - right.snapshot.time)
       .slice(0, STATE_MAX_OPTIONS)
-      .sort((left, right) => left.snapshot.time - right.snapshot.time)
     const groupId = animation.name
     const options = ranked.map(({ snapshot }, index) => {
       const id = `${groupId}~${index + 1}`
@@ -419,10 +598,12 @@ function collectVisualStateProfile(spine: Spine): VisualStateProfile {
         previewColor: representativeStateColor(setup, snapshot),
       }
     })
+    const affectedSlotIndexes = new Set(ranked.flatMap(({ snapshot }) => snapshot.slots.map((slot) => slot.slotIndex)))
+    const stateAffectsDrawOrder = ranked.some(({ snapshot }) => Boolean(snapshot.drawOrder))
     groups.push({
-      metadata: { id: groupId, label: animation.name, affectedSlots: slotIndexes.size, conflicts: [], options },
-      slotIndexes,
-      affectsDrawOrder,
+      metadata: { id: groupId, label: animation.name, affectedSlots: affectedSlotIndexes.size, conflicts: [], options },
+      slotIndexes: affectedSlotIndexes,
+      affectsDrawOrder: stateAffectsDrawOrder,
     })
   }
 
@@ -447,14 +628,18 @@ function applyVisualStates(
     if (!snapshot) continue
     for (const visual of snapshot.slots) {
       const slot = spine.skeleton.slots[visual.slotIndex]
-      const attachment = visual.attachmentName
-        ? spine.skeleton.getAttachment(visual.slotIndex, visual.attachmentName)
-        : null
-      slot.setAttachment(attachment!)
-      slot.color.set(...visual.color)
+      if (Object.hasOwn(visual, 'attachmentName')) {
+        const attachment = visual.attachmentName
+          ? spine.skeleton.getAttachment(visual.slotIndex, visual.attachmentName)
+          : null
+        slot.setAttachment(attachment!)
+      }
+      if (visual.color) slot.color.set(...visual.color)
       if (slot.darkColor && visual.darkColor) slot.darkColor.set(...visual.darkColor)
-      slot.deform.length = 0
-      slot.deform.push(...visual.deform)
+      if (visual.deform) {
+        slot.deform.length = 0
+        slot.deform.push(...visual.deform)
+      }
     }
     if (snapshot.drawOrder) {
       spine.skeleton.drawOrder.length = 0
