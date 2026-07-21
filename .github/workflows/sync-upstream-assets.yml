@@ -1,0 +1,80 @@
+name: Sync upstream assets
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Regenerate and deploy even when the upstream revision is unchanged
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-assets
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Refresh manifest and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out viewer
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Generate manifest from upstream Git tree
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE_SYNC: ${{ inputs.force || 'false' }}
+        run: |
+          if [ "$FORCE_SYNC" = "true" ]; then
+            npm run generate:manifest:remote -- --force
+          else
+            npm run generate:manifest:remote
+          fi
+
+      - name: Detect manifest changes
+        id: changes
+        run: |
+          if git diff --quiet -- src/data/assets.generated.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The asset manifest is already current." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "A new upstream asset revision was detected." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Install dependencies
+        if: steps.changes.outputs.changed == 'true'
+        run: npm ci
+
+      - name: Build viewer
+        if: steps.changes.outputs.changed == 'true'
+        run: npm run build
+
+      - name: Commit updated manifest
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/data/assets.generated.json
+          git commit -m "chore: sync upstream asset manifest"
+          git push origin HEAD:main
+
+      - name: Publish GitHub Pages
+        if: steps.changes.outputs.changed == 'true'
+        run: npx gh-pages -d dist

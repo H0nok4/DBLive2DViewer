@@ -10,7 +10,8 @@
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
     "assets:sync": "node scripts/sync-assets.mjs",
-    "generate:manifest": "node scripts/generate-manifest.mjs"
+    "generate:manifest": "node scripts/generate-manifest.mjs",
+    "generate:manifest:remote": "node scripts/generate-manifest.mjs --remote"
   },
   "dependencies": {
     "@fontsource-variable/bricolage-grotesque": "^5.3.0",

@@ -67,13 +67,32 @@ The production output is written to `dist/`.
 
 ## Refresh the asset manifest
 
-After the upstream repository adds or renames models, run:
+To rebuild the manifest from a synchronized local asset checkout, run:
 
 ```bash
 npm run generate:manifest
 ```
 
-The generator reads the GitHub tree and rewrites `src/data/assets.generated.json`, grouping Break models as character skins and matching Effect models with their main variant.
+To read the upstream Git tree without downloading the multi-gigabyte asset set, run:
+
+```bash
+npm run generate:manifest:remote
+```
+
+Both modes rewrite `src/data/assets.generated.json`, grouping Break models as character skins and matching Effect models with their main variant. Remote mode leaves the file untouched when its saved upstream revision is already current; add `-- --force` to regenerate it anyway.
+
+## Automatic upstream synchronization
+
+The [`Sync upstream assets`](.github/workflows/sync-upstream-assets.yml) workflow checks DaiblosCoreAssets every six hours and can also be started manually from the Actions tab.
+
+When a new upstream revision is found, the workflow:
+
+1. Rebuilds the manifest directly from the GitHub Tree API without downloading the asset files.
+2. Installs dependencies and verifies the production build.
+3. Commits the updated manifest to `main` as `github-actions[bot]`.
+4. Publishes the new build to the `gh-pages` branch.
+
+If the upstream revision is unchanged, the workflow exits without creating a commit or deployment. The workflow requires GitHub Actions to have `contents: write` permission in the repository settings.
 
 ## Deploy to GitHub Pages
 

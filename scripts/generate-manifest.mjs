@@ -1,4 +1,4 @@
-import { readdir, stat, writeFile } from 'node:fs/promises'
+import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import { dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +11,8 @@ const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDir, '../DaiblosCoreAssets')
 const spineRoot = resolve(repositoryRoot, 'spine')
 const outputPath = resolve(scriptDir, '../src/data/assets.generated.json')
+const remoteMode = process.argv.includes('--remote')
+const forceMode = process.argv.includes('--force')
 
 function stem(path) {
   return path.split('/').at(-1).replace(/\.[^.]+$/, '')
@@ -190,12 +192,70 @@ async function walk(directory) {
   return files
 }
 
+function githubHeaders() {
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'DBLive2DViewer-manifest-generator',
+    'X-GitHub-Api-Version': '2022-11-28',
+  }
+  if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`
+  return headers
+}
+
+async function githubJson(path) {
+  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}${path}`, {
+    headers: githubHeaders(),
+  })
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(`GitHub API ${response.status} ${response.statusText}: ${detail.slice(0, 500)}`)
+  }
+  return response.json()
+}
+
+async function remoteTree() {
+  const commit = await githubJson(`/commits/${encodeURIComponent(branch)}`)
+  const treeSha = commit?.commit?.tree?.sha
+  if (!commit?.sha || !treeSha) throw new Error('The upstream branch did not return a commit and tree SHA')
+
+  const tree = await githubJson(`/git/trees/${encodeURIComponent(treeSha)}?recursive=1`)
+  if (tree.truncated) throw new Error('The upstream Git tree response was truncated; refusing to publish an incomplete manifest')
+
+  const files = (tree.tree ?? [])
+    .filter((entry) => entry.type === 'blob' && entry.path?.startsWith('spine/'))
+    .map((entry) => ({ path: entry.path, size: entry.size ?? 0 }))
+  if (!files.length) throw new Error('The upstream Git tree contains no Spine asset files')
+  return { files, revision: commit.sha }
+}
+
 function gitRevision() {
   const result = spawnSync('git', ['-C', repositoryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', shell: false })
   return result.status === 0 ? result.stdout.trim() : branch
 }
 
-const files = await walk(spineRoot)
+let files
+let revision
+if (remoteMode) {
+  const remote = await remoteTree()
+  files = remote.files
+  revision = remote.revision
+
+  if (!forceMode) {
+    try {
+      const current = JSON.parse(await readFile(outputPath, 'utf8'))
+      if (current.revision === revision) {
+        console.log(`Asset manifest is already current at ${revision.slice(0, 7)}; no file was changed.`)
+        process.exit(0)
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+  }
+} else {
+  files = await walk(spineRoot)
+  revision = gitRevision()
+}
+
 const groups = new Map()
 for (const file of files) {
   const folder = file.path.slice(0, file.path.lastIndexOf('/'))
@@ -291,7 +351,7 @@ const entries = [...characters, ...cgEntries]
 const output = {
   generatedAt: new Date().toISOString(),
   source,
-  revision: gitRevision(),
+  revision,
   folderCount: groups.size,
   modelCount,
   entryCount: entries.length,
@@ -299,4 +359,4 @@ const output = {
 }
 
 await writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, 'utf8')
-console.log(`Generated ${characters.length} characters and ${cgEntries.length} CG entries (${modelCount} Spine files) -> ${outputPath}`)
+console.log(`Generated ${characters.length} characters and ${cgEntries.length} CG entries (${modelCount} Spine files) from ${remoteMode ? 'GitHub' : 'local assets'} at ${revision.slice(0, 7)} -> ${outputPath}`)
