@@ -25,6 +25,7 @@ import type {
 } from '../types'
 import { assetUrlCandidates } from '../lib/asset-url'
 import { loadSpineAsset, type LoadedSpineAsset } from '../lib/spine-loader'
+import { clampZoom } from '../lib/view-settings'
 import { useI18n } from '../i18n'
 
 interface SpineStageProps {
@@ -1182,8 +1183,13 @@ export function SpineStage({
 
   const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault()
-    const direction = event.deltaY > 0 ? -0.08 : 0.08
-    onZoomChange(Math.min(2.4, Math.max(0.2, zoom + direction)))
+    const pixelDelta = event.deltaMode === 1
+      ? event.deltaY * 16
+      : event.deltaMode === 2
+        ? event.deltaY * window.innerHeight
+        : event.deltaY
+    const factor = Math.min(1.18, Math.max(0.84, Math.exp(-pixelDelta * 0.0015)))
+    onZoomChange(clampZoom(zoom * factor))
   }
 
   return (

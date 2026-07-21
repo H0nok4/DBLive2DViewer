@@ -5,6 +5,7 @@ import { LayerPanel } from './components/LayerPanel'
 import { SpineStage } from './components/SpineStage'
 import { localizeVariantLabel, useI18n, type Locale, type Translator } from './i18n'
 import { formatBytes } from './lib/asset-url'
+import { MAX_ZOOM, MIN_ZOOM } from './lib/view-settings'
 import type {
   AssetManifest,
   AssetSource,
@@ -404,7 +405,7 @@ function App() {
             <span className="toolbar-separator" />
             <label className="zoom-control">
               <span>ZOOM</span>
-              <input type="range" min="0.2" max="2.4" step="0.02" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
+              <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step="0.05" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
               <output>{Math.round(zoom * 100)}%</output>
             </label>
             <span className="toolbar-separator" />
